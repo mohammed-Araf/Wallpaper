@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "197143722289",
+    "firebase_url": "https://wallpaper-a8747-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "wallpaper-a8747",
+    "storage_bucket": "wallpaper-a8747.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:197143722289:android:3bded4b8bd098097351810",
+        "android_client_info": {
+          "package_name": "com.alancruse.wallpaper"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "197143722289-37tgvhsm2nk1l3egp9u2d3ajch40823e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAfaOijG-Fh8gqF7GJSzJW87AJoEMrNnIg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "197143722289-37tgvhsm2nk1l3egp9u2d3ajch40823e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

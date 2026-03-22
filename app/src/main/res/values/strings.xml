@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">WallPaper</string>
+    <string name="wallpaper_description">Live wallpaper that syncs with your partner in real-time</string>
+    <string name="default_web_client_id">197143722289-37tgvhsm2nk1l3egp9u2d3ajch40823e.apps.googleusercontent.com</string>
+</resources>
