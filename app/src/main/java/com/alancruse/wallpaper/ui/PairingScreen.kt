@@ -85,6 +85,22 @@ fun PairingScreen(
         onDispose { pairingManager.cleanup() }
     }
 
+    // Robust polling: when waiting for partner, check Firebase every 2s directly
+    // from Compose scope. This guarantees the state change triggers navigation
+    // even if the realtime listener callback doesn't reach Compose properly.
+    LaunchedEffect(isWaitingForPartner) {
+        if (!isWaitingForPartner) return@LaunchedEffect
+        while (isWaitingForPartner) {
+            delay(2000)
+            pairingManager.checkExistingPairing { existingPartner ->
+                if (existingPartner != null && isWaitingForPartner) {
+                    isWaitingForPartner = false
+                    onPairedSuccess(existingPartner)
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier.fillMaxSize().background(DeepNavy)
     ) {
