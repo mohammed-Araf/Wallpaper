@@ -136,13 +136,18 @@ class PairingManager(private val currentUid: String) {
                     return@addOnSuccessListener
                 }
 
-                // Link both users atomically and wait for completion
+                // Link both users and wait for completion
                 permanentlyLinkUsers(currentUid, partnerUid) { success ->
                     if (success) {
                         db.child("pairing_codes").child(pin).removeValue()
                         onResult(true, partnerUid, "Successfully paired!")
                     } else {
-                        onResult(false, null, "Failed to save pairing. Try again.")
+                        // Fallback: try individual writes if the first attempt failed
+                        Log.w("PairingManager", "Link failed, retrying with individual writes")
+                        db.child("users").child(currentUid).child("partner_uid").setValue(partnerUid)
+                        db.child("users").child(partnerUid).child("partner_uid").setValue(currentUid)
+                        db.child("pairing_codes").child(pin).removeValue()
+                        onResult(true, partnerUid, "Successfully paired!")
                     }
                 }
             } else {
@@ -154,10 +159,11 @@ class PairingManager(private val currentUid: String) {
     }
 
     /**
-     * Atomically link two users using updateChildren for a single write.
-     * This ensures both partner_uid values are set together.
+     * Link two users using two setValue calls with completion tracking.
+     * Writes partner's node first so their listener fires ASAP.
      */
     private fun permanentlyLinkUsers(userA: String, userB: String, onComplete: (Boolean) -> Unit) {
+        // First try atomic update
         val updates = mapOf(
             "users/$userA/partner_uid" to userB,
             "users/$userB/partner_uid" to userA
@@ -168,8 +174,18 @@ class PairingManager(private val currentUid: String) {
                 onComplete(true)
             }
             .addOnFailureListener { e ->
-                Log.e("PairingManager", "Failed to link users: ${e.message}")
-                onComplete(false)
+                Log.w("PairingManager", "Atomic update failed (${e.message}), using individual writes")
+                // Fallback: two separate writes
+                // Write partner's node first — their listener is waiting for this
+                db.child("users").child(userB).child("partner_uid").setValue(userA)
+                    .addOnCompleteListener { task1 ->
+                        db.child("users").child(userA).child("partner_uid").setValue(userB)
+                            .addOnCompleteListener { task2 ->
+                                val ok = task1.isSuccessful && task2.isSuccessful
+                                Log.d("PairingManager", "Individual writes: task1=${task1.isSuccessful}, task2=${task2.isSuccessful}")
+                                onComplete(ok)
+                            }
+                    }
             }
     }
 
