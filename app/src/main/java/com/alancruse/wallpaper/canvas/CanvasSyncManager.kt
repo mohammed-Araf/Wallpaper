@@ -6,7 +6,10 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.graphics.toArgb
+import com.alancruse.wallpaper.ui.theme.DeepNavy
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -30,6 +33,7 @@ class CanvasSyncManager(
     private val stickersRef = roomRef.child("stickers")
     private val textsRef = roomRef.child("texts")
     private val imagesRef = roomRef.child("images")
+    private val bgColorRef = roomRef.child("backgroundColor")
 
     // Observable lists — element data
     val sharedStrokes = mutableStateListOf<DrawingStroke>()
@@ -43,11 +47,15 @@ class CanvasSyncManager(
     val textKeys = mutableStateListOf<String>()
     val imageKeys = mutableStateListOf<String>()
 
+    // Background color (ARGB int, synced across devices)
+    val sharedBackgroundColor = mutableIntStateOf(DeepNavy.toArgb())
+
     // Listeners for cleanup
     private var strokesListener: ChildEventListener? = null
     private var stickersListener: ValueEventListener? = null
     private var textsListener: ValueEventListener? = null
     private var imagesListener: ValueEventListener? = null
+    private var bgColorListener: ValueEventListener? = null
 
     // Throttle state for transform updates
     private val handler = Handler(Looper.getMainLooper())
@@ -147,6 +155,20 @@ class CanvasSyncManager(
             }
         }
         imagesRef.addValueEventListener(imagesListener!!)
+
+        // ── Background color listener ──
+        bgColorListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val argb = snapshot.getValue(Int::class.java)
+                if (argb != null) {
+                    sharedBackgroundColor.intValue = argb
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("CanvasSync", "BgColor error: ${error.message}")
+            }
+        }
+        bgColorRef.addValueEventListener(bgColorListener!!)
     }
 
     // ── Push methods ──
@@ -286,6 +308,33 @@ class CanvasSyncManager(
         }
     }
 
+    // ── Delete individual elements ──
+
+    fun deleteSticker(index: Int) {
+        if (index in stickerKeys.indices) {
+            stickersRef.child(stickerKeys[index]).removeValue()
+        }
+    }
+
+    fun deleteText(index: Int) {
+        if (index in textKeys.indices) {
+            textsRef.child(textKeys[index]).removeValue()
+        }
+    }
+
+    fun deleteImage(index: Int) {
+        if (index in imageKeys.indices) {
+            imagesRef.child(imageKeys[index]).removeValue()
+        }
+    }
+
+    // ── Background color ──
+
+    fun setBackgroundColor(argb: Int) {
+        sharedBackgroundColor.intValue = argb
+        bgColorRef.setValue(argb)
+    }
+
     // ── Undo: remove the most recently added element across all types ──
 
     fun undoLast() {
@@ -402,6 +451,27 @@ class CanvasSyncManager(
         })
     }
 
+    /** Erase entire stroke nearest to tap point (no splitting) */
+    fun eraseWholeStrokeNear(tapX: Float, tapY: Float, threshold: Float = 40f) {
+        strokesRef.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                for (child in snapshot.children) {
+                    val stroke = child.getValue(DrawingStroke::class.java) ?: continue
+                    val isNear = stroke.path.any { point ->
+                        val dx = point.x - tapX
+                        val dy = point.y - tapY
+                        (dx * dx + dy * dy) < threshold * threshold
+                    }
+                    if (isNear) {
+                        child.ref.removeValue()
+                        return
+                    }
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        })
+    }
+
     fun clearCanvas() {
         strokesRef.removeValue()
         stickersRef.removeValue()
@@ -415,6 +485,7 @@ class CanvasSyncManager(
         stickersListener?.let { stickersRef.removeEventListener(it) }
         textsListener?.let { textsRef.removeEventListener(it) }
         imagesListener?.let { imagesRef.removeEventListener(it) }
+        bgColorListener?.let { bgColorRef.removeEventListener(it) }
         stickerThrottleRunnable?.let { handler.removeCallbacks(it) }
         textThrottleRunnable?.let { handler.removeCallbacks(it) }
         imageThrottleRunnable?.let { handler.removeCallbacks(it) }

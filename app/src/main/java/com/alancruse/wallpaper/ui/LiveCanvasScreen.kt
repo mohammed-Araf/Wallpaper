@@ -1,6 +1,7 @@
 package com.alancruse.wallpaper.ui
 
 import android.net.Uri
+import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -12,14 +13,17 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -30,34 +34,40 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.alancruse.wallpaper.canvas.*
 import com.alancruse.wallpaper.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
-// Two main tools + default transform
-private enum class CanvasTool {
-    SKETCH, CREATE, TRANSFORM
-}
-
-/** Which type of element is selected for transform */
+// Tools: NONE = default seamless drag mode
+private enum class CanvasTool { NONE, SKETCH, ERASER, STICKER, TEXT_TOOL, IMAGE_TOOL }
 private enum class SelectedType { STICKER, TEXT, IMAGE }
+private enum class EraserMode { POINT, STROKE }
 
-/** Sealed class to unify all canvas elements for chronological layer ordering */
 private sealed class CanvasLayer(val timestamp: Long) {
     data class StrokeLayer(val stroke: DrawingStroke, val idx: Int) : CanvasLayer(stroke.timestamp)
     data class StickerLayer(val sticker: StickerElement, val idx: Int) : CanvasLayer(sticker.timestamp)
@@ -65,6 +75,7 @@ private sealed class CanvasLayer(val timestamp: Long) {
     data class ImageLayer(val image: ImageElement, val idx: Int) : CanvasLayer(image.timestamp)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveCanvasScreen(
     syncManager: CanvasSyncManager,
@@ -72,16 +83,20 @@ fun LiveCanvasScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     val remoteStrokes = syncManager.sharedStrokes
     val remoteStickers = syncManager.sharedStickers
     val remoteTexts = syncManager.sharedTexts
     val remoteImages = syncManager.sharedImages
+    val bgColorArgb by syncManager.sharedBackgroundColor
 
-    // Cache decoded bitmaps to avoid re-decoding Base64 on every frame
+    // Bitmap cache
     val bitmapCache = remember { mutableMapOf<String, android.graphics.Bitmap>() }
-    // Update cache when images change
     LaunchedEffect(remoteImages.toList()) {
-        // Add new bitmaps
         remoteImages.forEach { img ->
             if (img.imageBase64.isNotEmpty() && img.imageBase64 !in bitmapCache) {
                 try {
@@ -91,31 +106,33 @@ fun LiveCanvasScreen(
                 } catch (_: Exception) {}
             }
         }
-        // Remove stale entries
-        val activeKeys = remoteImages.map { it.imageBase64 }.toSet()
-        bitmapCache.keys.retainAll(activeKeys)
+        bitmapCache.keys.retainAll(remoteImages.map { it.imageBase64 }.toSet())
     }
 
+    // ── Tool state ──
+    var activeTool by remember { mutableStateOf(CanvasTool.NONE) }
     var currentPath by remember { mutableStateOf(emptyList<Point>()) }
-    // Default tool is TRANSFORM (Move)
-    var activeTool by remember { mutableStateOf(CanvasTool.TRANSFORM) }
-    // Sub-state: pen or eraser within SKETCH tool
-    var isErasing by remember { mutableStateOf(false) }
+    var eraserMode by remember { mutableStateOf(EraserMode.POINT) }
 
-    // Draw tool state
-    val colorOptions = listOf(
-        Color.White, ElectricViolet, CyanAccent, SoftPink,
-        SuccessGreen, AmberGlow, WarmRose
+    // Color & size
+    val presetColors = listOf(
+        Color.White, Color.Black, Color(0xFFFF0000), Color(0xFFFF6B00),
+        Color(0xFFFFD600), Color(0xFF00E676), Color(0xFF2979FF), Color(0xFF7C4DFF),
+        Color(0xFFE040FB), Color(0xFFFF4081), ElectricViolet, CyanAccent
     )
     var selectedColor by remember { mutableStateOf(Color.White) }
-    val widthOptions = listOf(5f, 10f, 18f, 28f)
-    var selectedWidth by remember { mutableStateOf(10f) }
+    var selectedOpacity by remember { mutableStateOf(1f) }
+    var selectedWidth by remember { mutableStateOf(8f) }
+    var eraserWidth by remember { mutableStateOf(25f) }
+    var showColorPicker by remember { mutableStateOf(false) }
 
-    // Eraser width state
-    var eraserWidth by remember { mutableStateOf(20f) }
+    // Eraser preview
+    var eraserPreviewPos by remember { mutableStateOf(Offset(screenWidthPx / 2, screenHeightPx / 2)) }
 
-    // Sticker state
-    var selectedEmoji by remember { mutableStateOf("❤️") }
+    // Sticker — drag-from-panel
+    var showEmojiPanel by remember { mutableStateOf(false) }
+    var draggingEmoji by remember { mutableStateOf<String?>(null) }
+    var emojiDragPos by remember { mutableStateOf(Offset.Zero) }
     val emojiList = listOf(
         "❤️", "💜", "💙", "💚", "💛", "🧡", "🤍", "🖤",
         "⭐", "✨", "🌟", "💫", "🔥", "🌈", "🦋", "🌸",
@@ -124,17 +141,28 @@ fun LiveCanvasScreen(
         "🥰", "😘", "🤗", "😎", "🥳", "🎉", "🎈", "🎨"
     )
 
-    // Text tool state
-    var showTextDialog by remember { mutableStateOf(false) }
-    var pendingText by remember { mutableStateOf("") }
-    // Store tap position so text is placed exactly where user tapped
-    var textTapX by remember { mutableStateOf(0f) }
-    var textTapY by remember { mutableStateOf(0f) }
-    // Text editing state — item #1
+    // Inline text editing
     var isEditingText by remember { mutableStateOf(false) }
-    var editTextIndex by remember { mutableStateOf(-1) }
+    var inlineText by remember { mutableStateOf("") }
+    var textEditX by remember { mutableStateOf(200f) }
+    var textEditY by remember { mutableStateOf(500f) }
+    val textFocusRequester = remember { FocusRequester() }
 
-    // Image state
+    // Background color
+    var showBgColorPicker by remember { mutableStateOf(false) }
+    val bgCyclePresets = remember {
+        listOf(
+            DeepNavy, DarkSurface, Color.Black,
+            Color(0xFF1A1A2E), Color(0xFF16213E), Color(0xFF0F3460),
+            Color(0xFF2C003E), Color(0xFF1B1B2F), Color(0xFF162447),
+            Color(0xFF1F4068), Color(0xFF203040), Color(0xFF2D4059),
+            Color.White, Color(0xFFF5F5F5), Color(0xFFE8E8E8),
+            Color(0xFFFFE6E6), Color(0xFFE6F0FF), Color(0xFFE6FFE6)
+        )
+    }
+    var bgCycleIndex by remember { mutableStateOf(0) }
+
+    // Image
     var isUploadingImage by remember { mutableStateOf(false) }
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -143,196 +171,245 @@ fun LiveCanvasScreen(
             isUploadingImage = true
             syncManager.pushImage(context, uri, 100f, 300f, 300f, 300f) { success, errorMsg ->
                 isUploadingImage = false
-                if (!success) {
-                    Toast.makeText(context, errorMsg ?: "Image upload failed", Toast.LENGTH_LONG).show()
-                }
+                if (!success) Toast.makeText(context, errorMsg ?: "Upload failed", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // ── Transform / selection state ──
-    var selectedType by remember { mutableStateOf<SelectedType?>(null) }
-    var selectedIndex by remember { mutableStateOf(-1) }
+    // ── Seamless drag state (default NONE mode) ──
+    var dragType by remember { mutableStateOf<SelectedType?>(null) }
+    var dragIndex by remember { mutableStateOf(-1) }
+    var isDraggingElement by remember { mutableStateOf(false) }
+    var dragCurrentY by remember { mutableStateOf(0f) }
+    var isInDustbin by remember { mutableStateOf(false) }
+    val dustbinThreshold = screenHeightPx * 0.82f
+    val grabRadius = 120f // reasonable range — must be close to element
 
-    /** Find the nearest sticker/text/image to a tap point and select it */
-    fun selectNearestElement(tapX: Float, tapY: Float) {
-        var bestDist = Float.MAX_VALUE
-        var bestType: SelectedType? = null
-        var bestIdx = -1
+    // Dustbin animation
+    val dustbinVisible = isDraggingElement && dragCurrentY > screenHeightPx * 0.65f
+    val dustbinScale by animateFloatAsState(
+        targetValue = if (isInDustbin) 1.4f else if (dustbinVisible) 1f else 0.3f,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 400f), label = "ds"
+    )
+    val dustbinColor by animateColorAsState(
+        targetValue = if (isInDustbin) WarmRose else TextMuted,
+        animationSpec = spring(stiffness = 600f), label = "dc"
+    )
 
+    fun haptic(constant: Int = HapticFeedbackConstants.CLOCK_TICK) {
+        view.performHapticFeedback(constant)
+    }
+
+    /** Find the nearest element within grabRadius. Returns (type, index) or null. */
+    fun findNearest(x: Float, y: Float): Pair<SelectedType, Int>? {
+        var bestDist = Float.MAX_VALUE; var bestType: SelectedType? = null; var bestIdx = -1
         remoteStickers.forEachIndexed { i, s ->
-            val d = dist(tapX, tapY, s.x, s.y)
-            if (d < 100f && d < bestDist) {
-                bestDist = d; bestType = SelectedType.STICKER; bestIdx = i
-            }
+            val d = dist(x, y, s.x, s.y)
+            if (d < grabRadius && d < bestDist) { bestDist = d; bestType = SelectedType.STICKER; bestIdx = i }
         }
         remoteTexts.forEachIndexed { i, t ->
-            val d = dist(tapX, tapY, t.x, t.y)
-            if (d < 120f && d < bestDist) {
-                bestDist = d; bestType = SelectedType.TEXT; bestIdx = i
-            }
+            val d = dist(x, y, t.x, t.y)
+            if (d < grabRadius && d < bestDist) { bestDist = d; bestType = SelectedType.TEXT; bestIdx = i }
         }
         remoteImages.forEachIndexed { i, img ->
-            val cx = img.x + img.width / 2f
-            val cy = img.y + img.height / 2f
-            val d = dist(tapX, tapY, cx, cy)
-            if (d < 200f && d < bestDist) {
-                bestDist = d; bestType = SelectedType.IMAGE; bestIdx = i
+            val cx = img.x + img.width / 2f; val cy = img.y + img.height / 2f
+            val d = dist(x, y, cx, cy)
+            if (d < 200f && d < bestDist) { bestDist = d; bestType = SelectedType.IMAGE; bestIdx = i }
+        }
+        return if (bestType != null) bestType!! to bestIdx else null
+    }
+
+    /** Commit inline text to firebase and exit edit mode */
+    fun commitInlineText() {
+        if (inlineText.isNotBlank()) {
+            syncManager.pushText(TextElement(
+                text = inlineText, x = textEditX, y = textEditY,
+                colorArgb = selectedColor.copy(alpha = selectedOpacity).toArgb(), fontSize = 48f
+            ))
+            haptic(HapticFeedbackConstants.CONFIRM)
+        }
+        inlineText = ""
+        isEditingText = false
+        keyboardController?.hide()
+    }
+
+    BackHandler {
+        when {
+            isEditingText -> commitInlineText()
+            showEmojiPanel -> { showEmojiPanel = false; haptic() }
+            activeTool != CanvasTool.NONE -> {
+                haptic(); activeTool = CanvasTool.NONE
+                showColorPicker = false; showEmojiPanel = false
             }
-        }
-
-        selectedType = bestType
-        selectedIndex = bestIdx
-    }
-
-    /** Find nearest text element to a point */
-    fun findNearestText(tapX: Float, tapY: Float): Int {
-        var bestDist = Float.MAX_VALUE
-        var bestIdx = -1
-        remoteTexts.forEachIndexed { i, t ->
-            val d = dist(tapX, tapY, t.x, t.y)
-            if (d < 120f && d < bestDist) {
-                bestDist = d; bestIdx = i
-            }
-        }
-        return bestIdx
-    }
-
-    // Back button handler: return to Move if a tool is active, else close canvas
-    BackHandler(enabled = true) {
-        if (activeTool != CanvasTool.TRANSFORM) {
-            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-            activeTool = CanvasTool.TRANSFORM
-            selectedType = null; selectedIndex = -1
-        } else {
-            onDone()
+            else -> onDone()
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(DeepNavy)) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(bgColorArgb))) {
 
-        // ── THE DRAWING CANVAS ──
+        // ═══════════════════════════════════════════
+        // ██  CANVAS  ██
+        // ═══════════════════════════════════════════
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .then(
                     when (activeTool) {
-                        // ─── SKETCH tool: pen (tap+drag) or eraser (drag) depending on isErasing ───
-                        CanvasTool.SKETCH -> if (!isErasing) {
-                            Modifier
-                                .pointerInput("draw_tap", selectedColor, selectedWidth) {
-                                    detectTapGestures { offset ->
-                                        syncManager.pushStroke(DrawingStroke(
-                                            colorArgb = selectedColor.toArgb(),
-                                            strokeWidth = selectedWidth,
-                                            path = listOf(offset.toPoint(), offset.toPoint())
-                                        ))
-                                    }
+                        CanvasTool.SKETCH -> Modifier
+                            .pointerInput("sketch_tap", selectedColor, selectedWidth, selectedOpacity) {
+                                detectTapGestures { offset ->
+                                    if (isEditingText) { commitInlineText(); return@detectTapGestures }
+                                    haptic()
+                                    syncManager.pushStroke(DrawingStroke(
+                                        colorArgb = selectedColor.copy(alpha = selectedOpacity).toArgb(),
+                                        strokeWidth = selectedWidth,
+                                        path = listOf(offset.toPoint(), offset.toPoint())
+                                    ))
                                 }
-                                .pointerInput("draw_drag", selectedColor, selectedWidth) {
-                                    detectDragGestures(
-                                        onDragStart = { offset -> currentPath = listOf(offset.toPoint()) },
-                                        onDrag = { change, _ ->
-                                            change.consume()
-                                            currentPath = currentPath + change.position.toPoint()
-                                        },
-                                        onDragEnd = {
-                                            if (currentPath.isNotEmpty()) {
-                                                syncManager.pushStroke(DrawingStroke(
-                                                    colorArgb = selectedColor.toArgb(),
-                                                    strokeWidth = selectedWidth,
-                                                    path = currentPath
-                                                ))
-                                                currentPath = emptyList()
-                                            }
+                            }
+                            .pointerInput("sketch_drag", selectedColor, selectedWidth, selectedOpacity) {
+                                detectDragGestures(
+                                    onDragStart = { offset -> currentPath = listOf(offset.toPoint()) },
+                                    onDrag = { change, _ -> change.consume(); currentPath = currentPath + change.position.toPoint() },
+                                    onDragEnd = {
+                                        if (currentPath.isNotEmpty()) {
+                                            syncManager.pushStroke(DrawingStroke(
+                                                colorArgb = selectedColor.copy(alpha = selectedOpacity).toArgb(),
+                                                strokeWidth = selectedWidth, path = currentPath
+                                            ))
+                                            currentPath = emptyList()
                                         }
-                                    )
-                                }
-                        } else {
-                            Modifier.pointerInput(eraserWidth) {
+                                    }
+                                )
+                            }
+
+                        CanvasTool.ERASER -> when (eraserMode) {
+                            EraserMode.POINT -> Modifier.pointerInput(eraserWidth) {
                                 detectDragGestures { change, _ ->
                                     change.consume()
+                                    eraserPreviewPos = change.position
                                     syncManager.erasePointsNear(change.position.x, change.position.y, eraserWidth)
                                 }
                             }
-                        }
-
-                        // ─── CREATE tool: tap to place sticker (stickers handled via tap), text via dialog ───
-                        CanvasTool.CREATE -> Modifier.pointerInput(selectedEmoji, selectedColor) {
-                            detectTapGestures { offset ->
-                                // Check if tap is near an existing text → edit it
-                                val nearIdx = findNearestText(offset.x, offset.y)
-                                if (nearIdx >= 0) {
-                                    isEditingText = true
-                                    editTextIndex = nearIdx
-                                    pendingText = remoteTexts[nearIdx].text
-                                    showTextDialog = true
-                                } else {
-                                    // Place sticker at tap
-                                    syncManager.pushSticker(StickerElement(emoji = selectedEmoji, x = offset.x, y = offset.y, size = 80f))
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                }
-                            }
-                        }
-
-                        // ─── TRANSFORM (Move) tool: tap to select + pinch/drag to transform ─── (item #4)
-                        CanvasTool.TRANSFORM -> Modifier
-                            .pointerInput("transform_tap") {
+                            EraserMode.STROKE -> Modifier.pointerInput("stroke_eraser") {
                                 detectTapGestures { offset ->
-                                    selectNearestElement(offset.x, offset.y)
+                                    eraserPreviewPos = offset
+                                    syncManager.eraseWholeStrokeNear(offset.x, offset.y, 40f)
+                                    haptic(HapticFeedbackConstants.CONFIRM)
                                 }
                             }
-                            .pointerInput("transform_gesture", selectedType, selectedIndex) {
-                                detectTransformGestures { _, pan, zoom, rotation ->
-                                    if (selectedType == null || selectedIndex < 0) {
-                                        return@detectTransformGestures
-                                    }
-                                    when (selectedType) {
-                                        SelectedType.STICKER -> {
-                                            if (selectedIndex in remoteStickers.indices) {
-                                                val s = remoteStickers[selectedIndex]
-                                                val updated = s.copy(
-                                                    x = s.x + pan.x,
-                                                    y = s.y + pan.y,
-                                                    scale = (s.scale * zoom).coerceIn(0.3f, 5f),
-                                                    rotation = s.rotation + rotation
-                                                )
-                                                syncManager.updateSticker(selectedIndex, updated)
+                        }
+
+                        CanvasTool.STICKER -> Modifier // Gestures handled by emoji panel overlay
+                        CanvasTool.TEXT_TOOL -> Modifier.pointerInput("text_tap") {
+                            detectTapGestures { offset ->
+                                if (isEditingText) {
+                                    commitInlineText()
+                                } else {
+                                    textEditX = offset.x
+                                    textEditY = offset.y
+                                    isEditingText = true
+                                    inlineText = ""
+                                    haptic()
+                                }
+                            }
+                        }
+                        CanvasTool.IMAGE_TOOL -> Modifier
+                        // ── DEFAULT (NONE): seamless drag nearest element ──
+                        CanvasTool.NONE -> Modifier
+                            .pointerInput("none_move") {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    if (isEditingText) { commitInlineText() }
+                                    val startPos = down.position
+                                    val found = findNearest(startPos.x, startPos.y)
+
+                                    if (found != null) {
+                                        // ── Drag element ──
+                                        dragType = found.first
+                                        dragIndex = found.second
+                                        isDraggingElement = true
+                                        haptic()
+
+                                        var prevPos = startPos
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (change.pressed) {
+                                                change.consume()
+                                                val delta = change.position - prevPos
+                                                prevPos = change.position
+
+                                                var newY = 0f
+                                                when (dragType) {
+                                                    SelectedType.STICKER -> {
+                                                        if (dragIndex in remoteStickers.indices) {
+                                                            val s = remoteStickers[dragIndex]
+                                                            syncManager.updateSticker(dragIndex, s.copy(x = s.x + delta.x, y = s.y + delta.y))
+                                                            newY = s.y + delta.y
+                                                        }
+                                                    }
+                                                    SelectedType.TEXT -> {
+                                                        if (dragIndex in remoteTexts.indices) {
+                                                            val t = remoteTexts[dragIndex]
+                                                            syncManager.updateText(dragIndex, t.copy(x = t.x + delta.x, y = t.y + delta.y))
+                                                            newY = t.y + delta.y
+                                                        }
+                                                    }
+                                                    SelectedType.IMAGE -> {
+                                                        if (dragIndex in remoteImages.indices) {
+                                                            val img = remoteImages[dragIndex]
+                                                            syncManager.updateImage(dragIndex, img.copy(x = img.x + delta.x, y = img.y + delta.y))
+                                                            newY = img.y + delta.y + img.height / 2f
+                                                        }
+                                                    }
+                                                    else -> {}
+                                                }
+                                                dragCurrentY = newY
+                                                val wasInDustbin = isInDustbin
+                                                isInDustbin = newY > dustbinThreshold
+                                                if (isInDustbin && !wasInDustbin) haptic(HapticFeedbackConstants.CONFIRM)
+                                                if (!isInDustbin && wasInDustbin) haptic(HapticFeedbackConstants.CLOCK_TICK)
+                                            }
+                                        } while (event.changes.any { it.pressed })
+
+                                        // Gesture ended — dustbin check
+                                        if (isInDustbin && dragType != null && dragIndex >= 0) {
+                                            haptic(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.REJECT else HapticFeedbackConstants.LONG_PRESS)
+                                            when (dragType) {
+                                                SelectedType.STICKER -> syncManager.deleteSticker(dragIndex)
+                                                SelectedType.TEXT -> syncManager.deleteText(dragIndex)
+                                                SelectedType.IMAGE -> syncManager.deleteImage(dragIndex)
+                                                else -> {}
                                             }
                                         }
-                                        SelectedType.TEXT -> {
-                                            if (selectedIndex in remoteTexts.indices) {
-                                                val t = remoteTexts[selectedIndex]
-                                                val updated = t.copy(
-                                                    x = t.x + pan.x,
-                                                    y = t.y + pan.y,
-                                                    scale = (t.scale * zoom).coerceIn(0.3f, 5f),
-                                                    rotation = t.rotation + rotation
-                                                )
-                                                syncManager.updateText(selectedIndex, updated)
+                                        isDraggingElement = false; isInDustbin = false; dragType = null; dragIndex = -1
+                                    } else {
+                                        // ── Empty area: long-press to cycle background ──
+                                        val startTime = System.currentTimeMillis()
+                                        var bgChanged = false
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (change.pressed) {
+                                                val dx = change.position.x - startPos.x
+                                                val dy = change.position.y - startPos.y
+                                                if (dx * dx + dy * dy > 900f) break // finger moved too far
+                                                if (!bgChanged && System.currentTimeMillis() - startTime >= 3000L) {
+                                                    bgCycleIndex = (bgCycleIndex + 1) % bgCyclePresets.size
+                                                    syncManager.setBackgroundColor(bgCyclePresets[bgCycleIndex].toArgb())
+                                                    haptic(HapticFeedbackConstants.CONFIRM)
+                                                    bgChanged = true
+                                                }
                                             }
-                                        }
-                                        SelectedType.IMAGE -> {
-                                            if (selectedIndex in remoteImages.indices) {
-                                                val img = remoteImages[selectedIndex]
-                                                val updated = img.copy(
-                                                    x = img.x + pan.x,
-                                                    y = img.y + pan.y,
-                                                    scale = (img.scale * zoom).coerceIn(0.2f, 5f),
-                                                    rotation = img.rotation + rotation
-                                                )
-                                                syncManager.updateImage(selectedIndex, updated)
-                                            }
-                                        }
-                                        else -> {}
+                                        } while (event.changes.any { it.pressed })
                                     }
                                 }
                             }
                     }
                 )
         ) {
-            // ── Unified chronological layer system ── (item #5)
-            // Merge all elements into one list sorted by timestamp
+            // ── Render layers chronologically ──
             val layers = buildList {
                 remoteStrokes.forEachIndexed { i, s -> add(CanvasLayer.StrokeLayer(s, i)) }
                 remoteStickers.forEachIndexed { i, s -> add(CanvasLayer.StickerLayer(s, i)) }
@@ -340,488 +417,469 @@ fun LiveCanvasScreen(
                 remoteImages.forEachIndexed { i, img -> add(CanvasLayer.ImageLayer(img, i)) }
             }.sortedBy { it.timestamp }
 
-            val nativeCanvas = drawContext.canvas.nativeCanvas
+            val nc = drawContext.canvas.nativeCanvas
 
             for (layer in layers) {
                 when (layer) {
                     is CanvasLayer.StrokeLayer -> {
-                        val strokeData = layer.stroke
-                        if (strokeData.path.isNotEmpty()) {
-                            val composePath = Path().apply {
-                                val first = strokeData.path.first()
-                                moveTo(first.x, first.y)
-                                for (i in 1 until strokeData.path.size) {
-                                    lineTo(strokeData.path[i].x, strokeData.path[i].y)
-                                }
+                        val s = layer.stroke
+                        if (s.path.isNotEmpty()) {
+                            val p = Path().apply {
+                                moveTo(s.path.first().x, s.path.first().y)
+                                for (i in 1 until s.path.size) lineTo(s.path[i].x, s.path[i].y)
                             }
-                            drawPath(composePath, Color(strokeData.colorArgb),
-                                style = Stroke(width = strokeData.strokeWidth, cap = StrokeCap.Round))
-                            // Handle single-point strokes (dots) — item #3
-                            if (strokeData.path.size <= 2 && strokeData.path.first().x == strokeData.path.last().x
-                                && strokeData.path.first().y == strokeData.path.last().y) {
-                                drawCircle(
-                                    color = Color(strokeData.colorArgb),
-                                    radius = strokeData.strokeWidth / 2f,
-                                    center = Offset(strokeData.path.first().x, strokeData.path.first().y)
-                                )
+                            drawPath(p, Color(s.colorArgb), style = Stroke(width = s.strokeWidth, cap = StrokeCap.Round))
+                            if (s.path.size <= 2 && s.path.first().x == s.path.last().x && s.path.first().y == s.path.last().y) {
+                                drawCircle(Color(s.colorArgb), radius = s.strokeWidth / 2f, center = Offset(s.path.first().x, s.path.first().y))
                             }
                         }
                     }
                     is CanvasLayer.StickerLayer -> {
-                        val sticker = layer.sticker
-                        val idx = layer.idx
-                        val emojiPaint = android.graphics.Paint().apply {
-                            textAlign = android.graphics.Paint.Align.CENTER
-                            isAntiAlias = true
-                            textSize = sticker.size * sticker.scale
+                        val st = layer.sticker
+                        val paint = android.graphics.Paint().apply {
+                            textAlign = android.graphics.Paint.Align.CENTER; isAntiAlias = true; textSize = st.size * st.scale
                         }
-                        nativeCanvas.save()
-                        nativeCanvas.rotate(sticker.rotation, sticker.x, sticker.y)
-                        nativeCanvas.drawText(sticker.emoji, sticker.x, sticker.y, emojiPaint)
-                        nativeCanvas.restore()
-
-                        // Selection ring
-                        if (activeTool == CanvasTool.TRANSFORM && selectedType == SelectedType.STICKER && selectedIndex == idx) {
-                            drawCircle(
-                                color = ElectricViolet.copy(alpha = 0.5f),
-                                radius = sticker.size * sticker.scale * 0.7f,
-                                center = Offset(sticker.x, sticker.y),
-                                style = Stroke(2f)
-                            )
-                        }
+                        nc.save(); nc.rotate(st.rotation, st.x, st.y)
+                        nc.drawText(st.emoji, st.x, st.y, paint); nc.restore()
                     }
                     is CanvasLayer.TextLayer -> {
-                        val textEl = layer.text
-                        val idx = layer.idx
-                        val txtPaint = android.graphics.Paint().apply {
-                            color = textEl.colorArgb
-                            textSize = textEl.fontSize * textEl.scale
-                            isAntiAlias = true
+                        val t = layer.text
+                        val paint = android.graphics.Paint().apply {
+                            color = t.colorArgb; textSize = t.fontSize * t.scale; isAntiAlias = true
                             textAlign = android.graphics.Paint.Align.LEFT
                         }
-                        nativeCanvas.save()
-                        nativeCanvas.rotate(textEl.rotation, textEl.x, textEl.y)
-                        nativeCanvas.drawText(textEl.text, textEl.x, textEl.y, txtPaint)
-                        nativeCanvas.restore()
-
-                        if (activeTool == CanvasTool.TRANSFORM && selectedType == SelectedType.TEXT && selectedIndex == idx) {
-                            val tw = txtPaint.measureText(textEl.text)
-                            drawRect(
-                                color = CyanAccent.copy(alpha = 0.4f),
-                                topLeft = Offset(textEl.x - 4, textEl.y - textEl.fontSize * textEl.scale),
-                                size = androidx.compose.ui.geometry.Size(tw + 8, textEl.fontSize * textEl.scale + 8),
-                                style = Stroke(2f)
-                            )
-                        }
+                        nc.save(); nc.rotate(t.rotation, t.x, t.y)
+                        nc.drawText(t.text, t.x, t.y, paint); nc.restore()
                     }
                     is CanvasLayer.ImageLayer -> {
                         val img = layer.image
-                        val idx = layer.idx
                         if (img.imageBase64.isEmpty()) continue
-                        val isSelected = activeTool == CanvasTool.TRANSFORM && selectedType == SelectedType.IMAGE && selectedIndex == idx
-
-                        val bitmap = bitmapCache[img.imageBase64]
-
-                        if (bitmap != null) {
-                            val w = (img.width * img.scale).toInt().coerceAtLeast(1)
-                            val h = (img.height * img.scale).toInt().coerceAtLeast(1)
-                            val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, w, h, true)
-                            val cx = img.x + w / 2f
-                            val cy = img.y + h / 2f
-
-                            nativeCanvas.save()
-                            nativeCanvas.rotate(img.rotation, cx, cy)
-                            nativeCanvas.drawBitmap(scaledBitmap, img.x, img.y, null)
-                            nativeCanvas.restore()
-
-                            if (isSelected) {
-                                drawRect(
-                                    color = ElectricViolet.copy(alpha = 0.6f),
-                                    topLeft = Offset(img.x - 2, img.y - 2),
-                                    size = androidx.compose.ui.geometry.Size(w + 4f, h + 4f),
-                                    style = Stroke(3f)
-                                )
-                            }
-                        }
+                        val bitmap = bitmapCache[img.imageBase64] ?: continue
+                        val w = (img.width * img.scale).toInt().coerceAtLeast(1)
+                        val h = (img.height * img.scale).toInt().coerceAtLeast(1)
+                        val scaled = android.graphics.Bitmap.createScaledBitmap(bitmap, w, h, true)
+                        nc.save(); nc.rotate(img.rotation, img.x + w / 2f, img.y + h / 2f)
+                        nc.drawBitmap(scaled, img.x, img.y, null); nc.restore()
                     }
                 }
             }
 
-            // ── Draw live stroke (always on top) ──
+            // Live stroke preview
             if (currentPath.isNotEmpty()) {
-                val livePath = Path().apply {
+                val lp = Path().apply {
                     moveTo(currentPath.first().x, currentPath.first().y)
-                    for (i in 1 until currentPath.size) { lineTo(currentPath[i].x, currentPath[i].y) }
+                    for (i in 1 until currentPath.size) lineTo(currentPath[i].x, currentPath[i].y)
                 }
-                drawPath(livePath, selectedColor, style = Stroke(selectedWidth, cap = StrokeCap.Round))
+                drawPath(lp, selectedColor.copy(alpha = selectedOpacity), style = Stroke(selectedWidth, cap = StrokeCap.Round))
+            }
+
+            // Eraser circle preview
+            if (activeTool == CanvasTool.ERASER && eraserMode == EraserMode.POINT) {
+                drawCircle(Color.White.copy(alpha = 0.3f), radius = eraserWidth, center = eraserPreviewPos, style = Stroke(2f))
             }
         }
 
-        // ── TOP BAR: Done + Undo + Clear ──
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(top = 52.dp, start = 16.dp, end = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    if (activeTool != CanvasTool.TRANSFORM) {
-                        activeTool = CanvasTool.TRANSFORM
-                        selectedType = null; selectedIndex = -1
-                    } else {
-                        onDone()
-                    }
-                },
+        // ═══════════════════════════════════════════
+        // ██  INLINE TEXT EDITOR (overlay on canvas) ██
+        // ═══════════════════════════════════════════
+        if (isEditingText) {
+            val xDp = with(density) { textEditX.toDp() }
+            val yDp = with(density) { textEditY.toDp() }
+
+            Box(
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(CardSurface.copy(alpha = 0.9f))
+                    .offset(x = xDp - 4.dp, y = yDp - 24.dp)
+                    .widthIn(min = 80.dp, max = 260.dp)
             ) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = TextPrimary, modifier = Modifier.size(18.dp))
+                BasicTextField(
+                    value = inlineText,
+                    onValueChange = { inlineText = it },
+                    textStyle = TextStyle(
+                        color = selectedColor.copy(alpha = selectedOpacity),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    cursorBrush = SolidColor(CyanAccent),
+                    singleLine = false,
+                    modifier = Modifier
+                        .focusRequester(textFocusRequester)
+                        .background(Color.Black.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (inlineText.isEmpty()) {
+                                Text("Type here...", color = TextMuted.copy(alpha = 0.5f), fontSize = 24.sp)
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        syncManager.undoLast()
-                    },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(CardSurface.copy(alpha = 0.9f))
-                ) { Icon(Icons.AutoMirrored.Rounded.Undo, "Undo", tint = TextPrimary, modifier = Modifier.size(18.dp)) }
-                IconButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        syncManager.clearCanvas()
-                    },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(CardSurface.copy(alpha = 0.9f))
-                ) { Icon(Icons.Rounded.Delete, "Clear", tint = WarmRose, modifier = Modifier.size(18.dp)) }
+
+            LaunchedEffect(isEditingText) {
+                if (isEditingText) {
+                    textFocusRequester.requestFocus()
+                    keyboardController?.show()
+                }
             }
         }
 
-        // ── FLOATING TOOLBAR ──
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 12.dp, vertical = 14.dp)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(CardSurface.copy(alpha = 0.95f))
-                .border(1.dp, GlassBorder, RoundedCornerShape(24.dp))
-                .padding(12.dp)
-        ) {
-            // ── Tool tabs ──
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                ToolTab("Sketch", Icons.Rounded.Brush, activeTool == CanvasTool.SKETCH) {
-                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    activeTool = CanvasTool.SKETCH; selectedType = null; selectedIndex = -1
+        // ═══════════════════════════════════════════
+        // ██  FLOATING EMOJI BEING DRAGGED  ██
+        // ═══════════════════════════════════════════
+        if (draggingEmoji != null) {
+            val xDp = with(density) { emojiDragPos.x.toDp() }
+            val yDp = with(density) { emojiDragPos.y.toDp() }
+            Text(
+                draggingEmoji!!,
+                fontSize = 40.sp,
+                modifier = Modifier.offset(x = xDp - 20.dp, y = yDp - 20.dp)
+            )
+        }
+
+        // ═══════════════════════════════════════════
+        // ██  TOP-LEFT: Back button  ██
+        // ═══════════════════════════════════════════
+        SkeuButton(
+            icon = Icons.AutoMirrored.Rounded.ArrowBack,
+            isActive = false,
+            tintColor = TextPrimary,
+            modifier = Modifier.statusBarsPadding().padding(start = 12.dp, top = 8.dp).align(Alignment.TopStart),
+            onClick = {
+                haptic()
+                when {
+                    isEditingText -> commitInlineText()
+                    showEmojiPanel -> { showEmojiPanel = false }
+                    activeTool != CanvasTool.NONE -> {
+                        activeTool = CanvasTool.NONE
+                        showColorPicker = false; showEmojiPanel = false
+                    }
+                    else -> onDone()
                 }
-                ToolTab("Create", Icons.Rounded.AddCircleOutline, activeTool == CanvasTool.CREATE) {
-                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    activeTool = CanvasTool.CREATE; selectedType = null; selectedIndex = -1
+            }
+        )
+
+        // ═══════════════════════════════════════════
+        // ██  TOP-RIGHT: Undo + BG Color  ██
+        // ═══════════════════════════════════════════
+        Row(
+            modifier = Modifier.statusBarsPadding().padding(end = 12.dp, top = 8.dp).align(Alignment.TopEnd),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SkeuButton(Icons.Rounded.Palette, isActive = false, tintColor = CyanAccent) {
+                haptic(); showBgColorPicker = true
+            }
+            SkeuButton(Icons.AutoMirrored.Rounded.Undo, isActive = false, tintColor = TextPrimary) {
+                haptic(); syncManager.undoLast()
+            }
+        }
+
+        // ═══════════════════════════════════════════
+        // ██  LEFT EDGE: 4 Tool buttons (no Move!)  ██
+        // ═══════════════════════════════════════════
+        Column(
+            modifier = Modifier.statusBarsPadding().padding(start = 10.dp, top = 56.dp).align(Alignment.TopStart),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // Pencil — toggles sketch mode, tap again to show/hide color picker
+            SkeuButton(Icons.Rounded.Edit, activeTool == CanvasTool.SKETCH, ElectricViolet) {
+                haptic(HapticFeedbackConstants.CONFIRM)
+                if (isEditingText) commitInlineText()
+                if (activeTool == CanvasTool.SKETCH) { showColorPicker = !showColorPicker }
+                else { activeTool = CanvasTool.SKETCH; showColorPicker = false; showEmojiPanel = false }
+            }
+
+            // Eraser
+            SkeuButton(Icons.Rounded.AutoFixOff, activeTool == CanvasTool.ERASER, WarmRose) {
+                haptic(HapticFeedbackConstants.CONFIRM)
+                if (isEditingText) commitInlineText()
+                if (activeTool != CanvasTool.ERASER) {
+                    activeTool = CanvasTool.ERASER; showColorPicker = false; showEmojiPanel = false
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            // Sticker — shows panel
+            SkeuButton(Icons.Rounded.EmojiEmotions, activeTool == CanvasTool.STICKER || showEmojiPanel, AmberGlow) {
+                haptic(HapticFeedbackConstants.CONFIRM)
+                if (isEditingText) commitInlineText()
+                showEmojiPanel = !showEmojiPanel
+                activeTool = if (showEmojiPanel) CanvasTool.STICKER else CanvasTool.NONE
+                showColorPicker = false
+            }
 
-            // ── Tool-specific options with animated content ──
-            when (activeTool) {
-                CanvasTool.SKETCH -> {
-                    // Pen / Eraser toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // Pen toggle
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(32.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (!isErasing) ElectricViolet.copy(alpha = 0.2f) else Color.Transparent)
-                                .then(if (!isErasing) Modifier.border(1.dp, ElectricViolet.copy(alpha = 0.3f), RoundedCornerShape(10.dp)) else Modifier)
-                                .clickable {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                    isErasing = false
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Edit, null, tint = if (!isErasing) ElectricViolet else TextMuted, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Pen", fontSize = 12.sp, color = if (!isErasing) ElectricViolet else TextMuted, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                        // Eraser toggle
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(32.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (isErasing) WarmRose.copy(alpha = 0.2f) else Color.Transparent)
-                                .then(if (isErasing) Modifier.border(1.dp, WarmRose.copy(alpha = 0.3f), RoundedCornerShape(10.dp)) else Modifier)
-                                .clickable {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                    isErasing = true
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.AutoFixOff, null, tint = if (isErasing) WarmRose else TextMuted, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Eraser", fontSize = 12.sp, color = if (isErasing) WarmRose else TextMuted, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
+            // Text — tap canvas to type inline
+            SkeuButton(Icons.Rounded.TextFields, activeTool == CanvasTool.TEXT_TOOL, CyanAccent) {
+                haptic(HapticFeedbackConstants.CONFIRM)
+                if (isEditingText) commitInlineText()
+                activeTool = CanvasTool.TEXT_TOOL; showColorPicker = false; showEmojiPanel = false
+            }
 
-                    if (!isErasing) {
-                        // Pen options: color + size
-                        DrawToolOptions(colorOptions, selectedColor, widthOptions, selectedWidth,
-                            onColorSelect = { selectedColor = it }, onWidthSelect = { selectedWidth = it })
-                    } else {
-                        // Eraser size selector
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()) {
-                            Text("Size", fontSize = 11.sp, color = TextMuted, fontWeight = FontWeight.Medium)
-                            listOf(15f, 20f, 30f, 45f).forEach { width ->
-                                val dotSize = (width / 45f * 18f + 10f).dp
-                                Box(modifier = Modifier.size(dotSize).clip(CircleShape)
-                                    .background(if (eraserWidth == width) WarmRose.copy(alpha = 0.7f) else TextMuted.copy(alpha = 0.4f))
-                                    .then(if (eraserWidth == width) Modifier.border(2.dp, Color.White, CircleShape) else Modifier)
-                                    .clickable { eraserWidth = width })
-                            }
+            // Image
+            SkeuButton(Icons.Rounded.AddPhotoAlternate, activeTool == CanvasTool.IMAGE_TOOL, SoftPink) {
+                haptic(HapticFeedbackConstants.CONFIRM)
+                if (isEditingText) commitInlineText()
+                activeTool = CanvasTool.IMAGE_TOOL
+                imagePickerLauncher.launch("image/*")
+                showColorPicker = false; showEmojiPanel = false
+            }
+        }
+
+        // ═══════════════════════════════════════════
+        // ██  SKETCH: Color palette popup (only visible in sketch mode) ██
+        // ═══════════════════════════════════════════
+        AnimatedVisibility(
+            visible = activeTool == CanvasTool.SKETCH && showColorPicker,
+            enter = fadeIn(tween(150)) + scaleIn(spring(dampingRatio = 0.6f), initialScale = 0.5f),
+            exit = fadeOut(tween(100)) + scaleOut(targetScale = 0.5f),
+            modifier = Modifier.statusBarsPadding().padding(start = 52.dp, top = 56.dp).align(Alignment.TopStart)
+        ) {
+            Column(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(CardSurface.copy(alpha = 0.95f))
+                    .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for (row in presetColors.chunked(6)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        row.forEach { color ->
+                            val isSel = selectedColor == color
+                            Box(modifier = Modifier
+                                .size(if (isSel) 22.dp else 18.dp).clip(CircleShape).background(color)
+                                .then(if (isSel) Modifier.border(2.dp, Color.White, CircleShape) else Modifier.border(1.dp, GlassBorder, CircleShape))
+                                .clickable { selectedColor = color; haptic() })
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        HintText("Drag across strokes to erase parts")
                     }
                 }
+                // Opacity
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${(selectedOpacity * 100).toInt()}%", fontSize = 9.sp, color = TextMuted, modifier = Modifier.width(26.dp))
+                    Slider(
+                        value = selectedOpacity, onValueChange = { selectedOpacity = it },
+                        valueRange = 0.05f..1f,
+                        modifier = Modifier.width(100.dp).height(16.dp),
+                        colors = SliderDefaults.colors(thumbColor = selectedColor, activeTrackColor = selectedColor.copy(alpha = 0.5f), inactiveTrackColor = GlassBorder)
+                    )
+                }
+                // Size dots
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    listOf(4f, 8f, 16f, 26f).forEach { w ->
+                        val dotSize = (w / 26f * 12f + 6f).dp
+                        Box(modifier = Modifier.size(dotSize).clip(CircleShape)
+                            .background(if (selectedWidth == w) selectedColor else TextMuted.copy(alpha = 0.4f))
+                            .then(if (selectedWidth == w) Modifier.border(2.dp, Color.White, CircleShape) else Modifier)
+                            .clickable { selectedWidth = w; haptic() })
+                    }
+                }
+            }
+        }
 
-                CanvasTool.CREATE -> {
-                    // ── Emoji grid (no search bar) ──
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        emojiList.forEach { emoji ->
+        // ═══════════════════════════════════════════
+        // ██  ERASER: Mode toggle + size (center-top) ██
+        // ═══════════════════════════════════════════
+        AnimatedVisibility(
+            visible = activeTool == CanvasTool.ERASER,
+            enter = fadeIn(tween(200)) + slideInVertically(spring(dampingRatio = 0.7f)) { -it },
+            exit = fadeOut(tween(150)) + slideOutVertically { -it },
+            modifier = Modifier.statusBarsPadding().padding(top = 8.dp).align(Alignment.TopCenter)
+        ) {
+            Row(
+                modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(CardSurface.copy(alpha = 0.95f))
+                    .border(1.dp, GlassBorder, RoundedCornerShape(20.dp)).padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val pointActive = eraserMode == EraserMode.POINT
+                Box(modifier = Modifier.size(28.dp).clip(CircleShape)
+                    .background(if (pointActive) WarmRose.copy(alpha = 0.2f) else Color.Transparent)
+                    .then(if (pointActive) Modifier.border(1.dp, WarmRose, CircleShape) else Modifier)
+                    .clickable { eraserMode = EraserMode.POINT; haptic() }, contentAlignment = Alignment.Center
+                ) { Icon(Icons.Rounded.TouchApp, null, tint = if (pointActive) WarmRose else TextMuted, modifier = Modifier.size(14.dp)) }
+
+                val strokeActive = eraserMode == EraserMode.STROKE
+                Box(modifier = Modifier.size(28.dp).clip(CircleShape)
+                    .background(if (strokeActive) WarmRose.copy(alpha = 0.2f) else Color.Transparent)
+                    .then(if (strokeActive) Modifier.border(1.dp, WarmRose, CircleShape) else Modifier)
+                    .clickable { eraserMode = EraserMode.STROKE; haptic() }, contentAlignment = Alignment.Center
+                ) { Icon(Icons.Rounded.DeleteSweep, null, tint = if (strokeActive) WarmRose else TextMuted, modifier = Modifier.size(14.dp)) }
+
+                Box(modifier = Modifier.width(1.dp).height(20.dp).background(GlassBorder))
+
+                if (eraserMode == EraserMode.POINT) {
+                    Slider(
+                        value = eraserWidth, onValueChange = { eraserWidth = it },
+                        valueRange = 10f..60f,
+                        modifier = Modifier.width(80.dp).height(16.dp),
+                        colors = SliderDefaults.colors(thumbColor = WarmRose, activeTrackColor = WarmRose.copy(alpha = 0.4f), inactiveTrackColor = GlassBorder)
+                    )
+                } else { Text("Tap stroke", fontSize = 10.sp, color = TextMuted) }
+            }
+        }
+
+        // ═══════════════════════════════════════════
+        // ██  EMOJI PANEL — drag emoji from here to canvas ██
+        // ═══════════════════════════════════════════
+        AnimatedVisibility(
+            visible = showEmojiPanel,
+            enter = fadeIn(tween(200)) + slideInVertically(spring(dampingRatio = 0.6f)) { it / 2 },
+            exit = fadeOut(tween(150)) + slideOutVertically { it / 2 },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(CardSurface.copy(alpha = 0.95f))
+                    .border(1.dp, GlassBorder, RoundedCornerShape(20.dp))
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Drag to place", fontSize = 10.sp, color = TextMuted, modifier = Modifier.padding(bottom = 6.dp))
+                for (row in emojiList.chunked(10)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.padding(vertical = 2.dp)) {
+                        row.forEach { emoji ->
                             Box(
                                 modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selectedEmoji == emoji) ElectricViolet.copy(alpha = 0.3f) else Color.Transparent)
-                                    .then(if (selectedEmoji == emoji) Modifier.border(1.dp, ElectricViolet, RoundedCornerShape(10.dp)) else Modifier)
+                                    .size(32.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .pointerInput(emoji) {
+                                        detectDragGestures(
+                                            onDragStart = { offset ->
+                                                draggingEmoji = emoji
+                                                haptic()
+                                            },
+                                            onDrag = { change, _ ->
+                                                change.consume()
+                                                // Convert local position to screen position
+                                                emojiDragPos = change.position
+                                            },
+                                            onDragEnd = {
+                                                // Place the emoji at drag position
+                                                if (draggingEmoji != null) {
+                                                    // The drag position is relative to the emoji box, 
+                                                    // we need window-level coordinates. Use a fallback: 
+                                                    // place at center of screen if position seems off
+                                                    val placeX = if (emojiDragPos.x in 0f..screenWidthPx) emojiDragPos.x else screenWidthPx / 2
+                                                    val placeY = if (emojiDragPos.y in 0f..screenHeightPx) emojiDragPos.y else screenHeightPx / 2
+                                                    syncManager.pushSticker(StickerElement(
+                                                        emoji = draggingEmoji!!, x = placeX, y = placeY, size = 80f
+                                                    ))
+                                                    haptic(HapticFeedbackConstants.CONFIRM)
+                                                    showEmojiPanel = false
+                                                    activeTool = CanvasTool.NONE
+                                                }
+                                                draggingEmoji = null
+                                            },
+                                            onDragCancel = { draggingEmoji = null }
+                                        )
+                                    }
                                     .clickable {
-                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                        selectedEmoji = emoji
+                                        // Fallback: tap to place at center
+                                        syncManager.pushSticker(StickerElement(
+                                            emoji = emoji, x = screenWidthPx / 2, y = screenHeightPx / 3, size = 80f
+                                        ))
+                                        haptic(HapticFeedbackConstants.CONFIRM)
+                                        showEmojiPanel = false
+                                        activeTool = CanvasTool.NONE
                                     },
                                 contentAlignment = Alignment.Center
-                            ) { Text(emoji, fontSize = 22.sp) }
+                            ) { Text(emoji, fontSize = 20.sp) }
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // ── Text + Image buttons row ──
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // Add Text button
-                        Button(
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                isEditingText = false; editTextIndex = -1
-                                textTapX = 540f; textTapY = 960f // center-ish default
-                                showTextDialog = true
-                            },
-                            modifier = Modifier.weight(1f).height(36.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricViolet.copy(alpha = 0.3f))
-                        ) {
-                            Icon(Icons.Rounded.TextFields, null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Text", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        }
-
-                        // Add Image button
-                        Button(
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                imagePickerLauncher.launch("image/*")
-                            },
-                            modifier = Modifier.weight(1f).height(36.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = CyanAccent.copy(alpha = 0.3f))
-                        ) {
-                            Icon(Icons.Rounded.AddPhotoAlternate, null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Image", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        }
-                    }
-
-                    HintText("Tap canvas to place sticker • Tap existing text to edit")
-                }
-
-                CanvasTool.TRANSFORM -> {
-                    val statusText = when {
-                        selectedType == SelectedType.STICKER && selectedIndex >= 0 -> "Sticker selected — pinch to resize, rotate with 2 fingers, drag to move"
-                        selectedType == SelectedType.TEXT && selectedIndex >= 0 -> "Text selected — pinch to resize, rotate with 2 fingers, drag to move"
-                        selectedType == SelectedType.IMAGE && selectedIndex >= 0 -> "Image selected — pinch to resize, rotate with 2 fingers, drag to move"
-                        else -> "Tap to select a sticker, text, or image • Use tools below to create"
-                    }
-                    Text(statusText, fontSize = 12.sp, color = if (selectedType != null) CyanAccent else TextMuted,
-                        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-                    // Deselect button
-                    if (selectedType != null) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        TextButton(
-                            onClick = { selectedType = null; selectedIndex = -1 },
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        ) { Text("Deselect", color = TextMuted, fontSize = 12.sp) }
                     }
                 }
+            }
+        }
+
+        // ═══════════════════════════════════════════
+        // ██  DUSTBIN (animated, bottom-center)  ██
+        // ═══════════════════════════════════════════
+        AnimatedVisibility(
+            visible = dustbinVisible,
+            enter = fadeIn(tween(200)) + scaleIn(spring(dampingRatio = 0.5f, stiffness = 300f), initialScale = 0f),
+            exit = fadeOut(tween(200)) + scaleOut(spring(dampingRatio = 0.5f), targetScale = 0f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp)
+        ) {
+            Box(
+                modifier = Modifier.scale(dustbinScale).size(56.dp).clip(CircleShape)
+                    .background(
+                        if (isInDustbin) Brush.radialGradient(listOf(WarmRose.copy(alpha = 0.4f), WarmRose.copy(alpha = 0.1f)))
+                        else Brush.radialGradient(listOf(CardSurface.copy(alpha = 0.9f), CardSurface.copy(alpha = 0.6f)))
+                    )
+                    .border(if (isInDustbin) 2.dp else 1.dp, if (isInDustbin) WarmRose else GlassBorder, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Rounded.Delete, "Delete", tint = dustbinColor,
+                    modifier = Modifier.size(if (isInDustbin) 28.dp else 22.dp))
             }
         }
 
         // Upload overlay
         if (isUploadingImage) {
             Box(modifier = Modifier.fillMaxSize().background(DeepNavy.copy(alpha = 0.4f)),
-                contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CyanAccent) }
+                contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CyanAccent, strokeWidth = 3.dp) }
         }
     }
 
-    // ── Text input dialog (shared for new + edit) ──
-    if (showTextDialog) {
-        Dialog(onDismissRequest = { showTextDialog = false; isEditingText = false; editTextIndex = -1 }) {
-            Surface(shape = RoundedCornerShape(24.dp), color = CardSurface, tonalElevation = 0.dp,
+    // ═══════════════════════════════════════════
+    // ██  BACKGROUND COLOR DIALOG (only popup left)  ██
+    // ═══════════════════════════════════════════
+    if (showBgColorPicker) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showBgColorPicker = false }) {
+            Surface(shape = RoundedCornerShape(24.dp), color = CardSurface,
                 modifier = Modifier.border(1.dp, GlassBorder, RoundedCornerShape(24.dp))) {
-                Column(modifier = Modifier.padding(24.dp)) {
-                    Text(
-                        if (isEditingText) "Edit Text" else "Add Text",
-                        fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary, letterSpacing = (-0.3).sp
-                    )
+                Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Background", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                     Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = pendingText, onValueChange = { pendingText = it },
-                        placeholder = { Text("Type something...", color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(), singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ElectricViolet, cursorColor = ElectricViolet,
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary
-                        )
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showTextDialog = false; pendingText = ""; isEditingText = false; editTextIndex = -1 }) {
-                            Text("Cancel", color = TextMuted)
+                    for (row in bgCyclePresets.chunked(6)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                            row.forEach { color ->
+                                val isSel = color.toArgb() == bgColorArgb
+                                Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(color)
+                                    .then(if (isSel) Modifier.border(3.dp, ElectricViolet, CircleShape) else Modifier.border(1.dp, GlassBorder, CircleShape))
+                                    .clickable { syncManager.setBackgroundColor(color.toArgb()); haptic(HapticFeedbackConstants.CONFIRM) })
+                            }
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                if (pendingText.isNotBlank()) {
-                                    if (isEditingText && editTextIndex >= 0 && editTextIndex in remoteTexts.indices) {
-                                        // Update existing text element
-                                        val existingText = remoteTexts[editTextIndex]
-                                        syncManager.updateText(editTextIndex, existingText.copy(text = pendingText))
-                                        isEditingText = false; editTextIndex = -1
-                                        pendingText = ""; showTextDialog = false
-                                    } else {
-                                        // New text — place at the stored tap position immediately
-                                        syncManager.pushText(TextElement(
-                                            text = pendingText, x = textTapX, y = textTapY,
-                                            colorArgb = selectedColor.toArgb(), fontSize = 48f
-                                        ))
-                                        pendingText = ""; showTextDialog = false
-                                        // Auto-return to Move
-                                        activeTool = CanvasTool.TRANSFORM
-                                    }
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = ElectricViolet)
-                        ) { Text(if (isEditingText) "Update" else "Place on Canvas") }
                     }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TextButton(onClick = { showBgColorPicker = false }) { Text("Done", color = CyanAccent) }
                 }
             }
         }
     }
 }
 
-// ── Helper composables ──
-
+// ═══════════════════════════════════════════
+// ██  SKEUOMORPHIC BUTTON  ██
+// ═══════════════════════════════════════════
 @Composable
-private fun HintText(text: String) {
-    Text(text, fontSize = 11.sp, color = TextMuted, textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth())
-}
-
-@Composable
-private fun DrawToolOptions(
-    colors: List<Color>, selectedColor: Color,
-    widths: List<Float>, selectedWidth: Float,
-    onColorSelect: (Color) -> Unit, onWidthSelect: (Float) -> Unit
+private fun SkeuButton(
+    icon: ImageVector, isActive: Boolean, tintColor: Color,
+    modifier: Modifier = Modifier, onClick: () -> Unit
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()) {
-        Text("Color", fontSize = 11.sp, color = TextMuted, fontWeight = FontWeight.Medium)
-        colors.forEach { color ->
-            Box(modifier = Modifier.size(if (selectedColor == color) 28.dp else 22.dp)
-                .clip(CircleShape).background(color)
-                .then(if (selectedColor == color) Modifier.border(2.dp, Color.White, CircleShape)
-                else Modifier.border(1.dp, GlassBorder, CircleShape))
-                .clickable { onColorSelect(color) })
-        }
-    }
-    Spacer(modifier = Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()) {
-        Text("Size", fontSize = 11.sp, color = TextMuted, fontWeight = FontWeight.Medium)
-        widths.forEach { width ->
-            val dotSize = (width / 28f * 18f + 8f).dp
-            Box(modifier = Modifier.size(dotSize).clip(CircleShape)
-                .background(if (selectedWidth == width) selectedColor else TextMuted.copy(alpha = 0.4f))
-                .then(if (selectedWidth == width) Modifier.border(2.dp, Color.White, CircleShape) else Modifier)
-                .clickable { onWidthSelect(width) })
-        }
-    }
-}
-
-@Composable
-private fun ToolTab(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, isActive: Boolean, onClick: () -> Unit) {
-    val bgColor by animateColorAsState(
-        targetValue = if (isActive) ElectricViolet.copy(alpha = 0.15f) else Color.Transparent,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = 400f), label = "toolBg"
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val buttonScale by animateFloatAsState(
+        targetValue = when { isPressed -> 0.85f; isActive -> 1.1f; else -> 1f },
+        animationSpec = spring(dampingRatio = 0.4f, stiffness = 800f), label = "bs"
     )
-    val contentColor by animateColorAsState(
-        targetValue = if (isActive) ElectricViolet else TextMuted,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = 400f), label = "toolColor"
+    val bgBrush = if (isActive) Brush.verticalGradient(listOf(tintColor.copy(alpha = 0.25f), tintColor.copy(alpha = 0.08f)))
+    else Brush.verticalGradient(listOf(ElevatedSurface.copy(alpha = 0.95f), CardSurface.copy(alpha = 0.95f)))
+    val borderColor by animateColorAsState(
+        targetValue = if (isActive) tintColor.copy(alpha = 0.5f) else GlassBorder, animationSpec = tween(200), label = "bc"
     )
-    val tabScale by animateFloatAsState(
-        targetValue = if (isActive) 1.08f else 1f,
-        animationSpec = spring(dampingRatio = 0.5f, stiffness = 500f), label = "tabScale"
+    val iconTint by animateColorAsState(
+        targetValue = if (isActive) tintColor else TextSecondary, animationSpec = tween(150), label = "it"
     )
-    Column(horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .scale(tabScale)
-            .clip(RoundedCornerShape(12.dp))
-            .background(bgColor)
-            .then(if (isActive) Modifier.border(1.dp, ElectricViolet.copy(alpha = 0.2f), RoundedCornerShape(12.dp)) else Modifier)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 7.dp)) {
-        Icon(icon, label, tint = contentColor, modifier = Modifier.size(18.dp))
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(label, fontSize = 9.sp, color = contentColor, fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium)
-    }
+    Box(
+        modifier = modifier.scale(buttonScale).size(36.dp)
+            .shadow(if (isActive) 4.dp else 2.dp, CircleShape, spotColor = if (isActive) tintColor.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.3f))
+            .clip(CircleShape).background(bgBrush).border(1.dp, borderColor, CircleShape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { Icon(icon, null, tint = iconTint, modifier = Modifier.size(16.dp)) }
 }
 
 private fun dist(x1: Float, y1: Float, x2: Float, y2: Float): Float {
-    val dx = x1 - x2; val dy = y1 - y2
-    return sqrt(dx * dx + dy * dy)
+    val dx = x1 - x2; val dy = y1 - y2; return sqrt(dx * dx + dy * dy)
 }

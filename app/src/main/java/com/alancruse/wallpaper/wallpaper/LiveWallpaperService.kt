@@ -43,15 +43,7 @@ class LiveWallpaperService : WallpaperService() {
         private var surfaceWidth = 0
         private var surfaceHeight = 0
 
-        private val bgColor = Color.parseColor("#0D0D1A")
-        private val emptyTitlePaint = Paint().apply {
-            color = Color.parseColor("#64748B"); textSize = 42f
-            textAlign = Paint.Align.CENTER; isAntiAlias = true
-        }
-        private val emptySubPaint = Paint().apply {
-            color = Color.parseColor("#334155"); textSize = 28f
-            textAlign = Paint.Align.CENTER; isAntiAlias = true
-        }
+        private var bgColor = Color.parseColor("#0D0D1A")
 
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
@@ -108,6 +100,15 @@ class LiveWallpaperService : WallpaperService() {
                 images = snap.children.mapNotNull { it.getValue(ImageElement::class.java) }
                 drawFrame()
             }
+            addListener(roomRef.child("backgroundColor")) { snap ->
+                val colorArgb = snap.getValue(Int::class.java)
+                if (colorArgb != null) {
+                    bgColor = colorArgb
+                } else {
+                    bgColor = Color.parseColor("#0D0D1A")
+                }
+                drawFrame()
+            }
         }
 
         private fun addListener(ref: com.google.firebase.database.DatabaseReference, onData: (DataSnapshot) -> Unit) {
@@ -157,9 +158,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawOnCanvas(canvas: Canvas) {
             canvas.drawColor(bgColor)
 
-            if (strokes.isEmpty() && stickers.isEmpty() && texts.isEmpty() && images.isEmpty()) {
-                drawEmptyState(canvas); return
-            }
+
 
             // ── Chronological layer system — same as canvas editor ──
             // Build a unified list sorted by timestamp so first-created = bottom layer
@@ -234,18 +233,6 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun drawEmptyState(canvas: Canvas) {
-            val spacing = 60f
-            val dotPaint = Paint().apply { color = Color.parseColor("#1A1A2E"); isAntiAlias = true }
-            var x = spacing
-            while (x < surfaceWidth) {
-                var y = spacing
-                while (y < surfaceHeight) { canvas.drawCircle(x, y, 1.5f, dotPaint); y += spacing }
-                x += spacing
-            }
-            val cx = surfaceWidth / 2f; val cy = surfaceHeight / 2f
-            canvas.drawText("WallPaper ✨", cx, cy - 30, emptyTitlePaint)
-            canvas.drawText("Draw in the app to see it here", cx, cy + 20, emptySubPaint)
-        }
+
     }
 }
