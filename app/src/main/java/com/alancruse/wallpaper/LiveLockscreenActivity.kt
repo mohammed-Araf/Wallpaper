@@ -22,25 +22,31 @@ class LiveLockscreenActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Prefer direct roomId (new flow), fall back to uid pair (legacy)
+        val roomId = intent.getStringExtra("roomId")
         val partnerUid = intent.getStringExtra("partnerUid") ?: ""
         val currentUid = intent.getStringExtra("currentUid") ?: ""
 
-        Log.d("Canvas", "Opening canvas: current=$currentUid, partner=$partnerUid")
-
-        if (currentUid.isEmpty() || partnerUid.isEmpty()) {
-            Log.e("Canvas", "Missing UIDs! current=$currentUid, partner=$partnerUid")
-            setContent {
-                WallPaperTheme {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Error: Missing user data. Please re-pair.", color = TextMuted)
-                    }
-                }
-            }
-            return
-        }
+        Log.d("Canvas", "Opening canvas: roomId=$roomId, current=$currentUid, partner=$partnerUid")
 
         syncManager = try {
-            CanvasSyncManager(currentUid, partnerUid)
+            if (!roomId.isNullOrEmpty()) {
+                // Direct room ID — for groups or any room
+                CanvasSyncManager.forRoom(roomId)
+            } else if (currentUid.isNotEmpty() && partnerUid.isNotEmpty()) {
+                // Legacy couple flow
+                CanvasSyncManager(currentUid, partnerUid)
+            } else {
+                Log.e("Canvas", "Missing UIDs! roomId=$roomId, current=$currentUid, partner=$partnerUid")
+                setContent {
+                    WallPaperTheme {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Error: Missing user data. Please re-pair.", color = TextMuted)
+                        }
+                    }
+                }
+                return
+            }
         } catch (e: Exception) {
             Log.e("Canvas", "Failed to create sync manager", e)
             setContent {

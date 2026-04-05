@@ -45,8 +45,18 @@ class LiveWallpaperService : WallpaperService() {
 
         private var bgColor = Color.parseColor("#0D0D1A")
 
+        private var currentListeningRoomId: String? = null
+
+        // Listen for wallpaper room changes from the app
+        private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "active_room_id") {
+                handler.post { startListening() }
+            }
+        }
+
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
+            PairingPrefs(this@LiveWallpaperService).registerOnChangeListener(prefsListener)
             startListening()
         }
 
@@ -65,22 +75,29 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onDestroy() {
-            super.onDestroy(); stopListening()
+            super.onDestroy()
+            stopListening()
+            PairingPrefs(this@LiveWallpaperService).unregisterOnChangeListener(prefsListener)
         }
 
         private fun startListening() {
-            stopListening()
             val prefs = PairingPrefs(this@LiveWallpaperService)
-            if (!prefs.isPaired) {
+
+            // Get the active wallpaper room ID (supports both couple and group)
+            val roomId = prefs.getWallpaperRoomId()
+
+            if (roomId == null) {
+                stopListening()
                 strokes = emptyList(); stickers = emptyList()
                 texts = emptyList(); images = emptyList()
                 drawFrame(); return
             }
 
-            val currentUid = prefs.currentUid!!
-            val partnerUid = prefs.partnerUid!!
-            val roomId = if (currentUid < partnerUid) "${currentUid}_${partnerUid}"
-            else "${partnerUid}_${currentUid}"
+            // Skip if already listening to this room
+            if (roomId == currentListeningRoomId && listeners.isNotEmpty()) return
+
+            stopListening()
+            currentListeningRoomId = roomId
 
             val roomRef = FirebaseDatabase.getInstance().reference.child("canvas_sessions").child(roomId)
 
@@ -102,11 +119,7 @@ class LiveWallpaperService : WallpaperService() {
             }
             addListener(roomRef.child("backgroundColor")) { snap ->
                 val colorArgb = snap.getValue(Int::class.java)
-                if (colorArgb != null) {
-                    bgColor = colorArgb
-                } else {
-                    bgColor = Color.parseColor("#0D0D1A")
-                }
+                bgColor = colorArgb ?: Color.parseColor("#0D0D1A")
                 drawFrame()
             }
         }
@@ -125,6 +138,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun stopListening() {
             for ((ref, l) in listeners) ref.removeEventListener(l)
             listeners.clear()
+            currentListeningRoomId = null
         }
 
         /** Decode a Base64 string to a Bitmap, caching by hash */

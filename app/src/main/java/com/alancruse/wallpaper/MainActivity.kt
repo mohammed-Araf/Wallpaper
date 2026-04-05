@@ -21,11 +21,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.alancruse.wallpaper.auth.GoogleAuthManager
+import com.alancruse.wallpaper.pairing.GroupManager
 import com.alancruse.wallpaper.pairing.PairingManager
 import com.alancruse.wallpaper.pairing.PairingPrefs
-import com.alancruse.wallpaper.ui.AuthScreen
-import com.alancruse.wallpaper.ui.HomeScreen
-import com.alancruse.wallpaper.ui.PairingScreen
+import com.alancruse.wallpaper.ui.*
 import com.alancruse.wallpaper.ui.theme.DeepNavy
 import com.alancruse.wallpaper.ui.theme.CyanAccent
 import com.alancruse.wallpaper.ui.theme.WallPaperTheme
@@ -33,7 +32,7 @@ import com.alancruse.wallpaper.wallpaper.LiveWallpaperService
 import com.google.firebase.auth.FirebaseUser
 
 private enum class AppState {
-    LOADING, SIGNED_OUT, NEEDS_PAIRING, PAIRED
+    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, CANVAS
 }
 
 class MainActivity : ComponentActivity() {
@@ -41,10 +40,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var googleAuthManager: GoogleAuthManager
     private lateinit var pairingPrefs: PairingPrefs
 
-    // Compose state at activity level so signInLauncher can update it
+    // Compose state at activity level
     private var appState by mutableStateOf(AppState.LOADING)
     private var currentUser by mutableStateOf<FirebaseUser?>(null)
     private var partnerUid by mutableStateOf<String?>(null)
+    private var groups by mutableStateOf<List<GroupManager.GroupInfo>>(emptyList())
+
+    // Canvas navigation state
+    private var pendingRoomId by mutableStateOf<String?>(null)
+    private var pendingRoomType by mutableStateOf<String?>(null)
 
     private val signInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -54,15 +58,7 @@ class MainActivity : ComponentActivity() {
                 val user = googleAuthManager.getCurrentUser()
                 currentUser = user
                 if (user != null) {
-                    PairingManager(user.uid).checkExistingPairing { existingPartner ->
-                        if (existingPartner != null) {
-                            partnerUid = existingPartner
-                            pairingPrefs.savePairing(user.uid, existingPartner)
-                            appState = AppState.PAIRED
-                        } else {
-                            appState = AppState.NEEDS_PAIRING
-                        }
-                    }
+                    checkPairingAndLoadGroups(user.uid)
                 }
             } else {
                 Log.e("Auth", "Sign in failed: $errorMsg")
@@ -85,35 +81,20 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermission()
 
-        // Check initial state
         val user = currentUser
         if (user == null) {
             appState = AppState.SIGNED_OUT
         } else {
             appState = AppState.LOADING
-            PairingManager(user.uid).checkExistingPairing { existingPartner ->
-                if (existingPartner != null) {
-                    partnerUid = existingPartner
-                    pairingPrefs.savePairing(user.uid, existingPartner)
-                    appState = AppState.PAIRED
-                } else {
-                    appState = AppState.NEEDS_PAIRING
-                }
-            }
+            checkPairingAndLoadGroups(user.uid)
         }
 
         setContent {
             WallPaperTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = DeepNavy
-                ) {
+                Surface(modifier = Modifier.fillMaxSize(), color = DeepNavy) {
                     when (appState) {
                         AppState.LOADING -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(color = CyanAccent)
                             }
                         }
@@ -132,56 +113,121 @@ class MainActivity : ComponentActivity() {
                                 onPairedSuccess = { pUid ->
                                     partnerUid = pUid
                                     pairingPrefs.savePairing(currentUser!!.uid, pUid)
-                                    appState = AppState.PAIRED
+                                    loadGroups(currentUser!!.uid)
+                                    appState = AppState.HOME
                                 }
                             )
                         }
 
-                        AppState.PAIRED -> {
+                        AppState.HOME -> {
+                            // Auto-switch dialog state
+                            var showAutoSwitch by remember { mutableStateOf(false) }
+
                             HomeScreen(
-                                partnerUid = partnerUid ?: "",
-                                onOpenCanvas = {
-                                    val intent = Intent(
-                                        this@MainActivity,
-                                        LiveLockscreenActivity::class.java
-                                    ).apply {
-                                        putExtra("currentUid", currentUser!!.uid)
-                                        putExtra("partnerUid", partnerUid)
-                                    }
-                                    startActivity(intent)
+                                currentUid = currentUser!!.uid,
+                                partnerUid = partnerUid,
+                                groups = groups,
+                                activeWallpaperRoomId = pairingPrefs.activeRoomId ?: pairingPrefs.getCoupleRoomId(),
+                                lockscreenRoomId = pairingPrefs.lockscreenRoomId,
+                                onOpenCanvas = { roomId, roomType ->
+                                    openCanvas(roomId)
                                 },
-                                onActivateWallpaper = {
-                                    launchWallpaperPicker()
+                                onSetWallpaper = { roomId, roomType ->
+                                    pairingPrefs.setActiveWallpaper(roomId, roomType)
+                                    // Force recompose
+                                    val g = groups; groups = emptyList(); groups = g
+                                    Toast.makeText(this@MainActivity, "🏠 Home wallpaper set!", Toast.LENGTH_SHORT).show()
+                                },
+                                onSetLockscreen = { roomId, roomType ->
+                                    pairingPrefs.setLockscreenWallpaper(roomId, roomType)
+                                    // Force recompose
+                                    val g = groups; groups = emptyList(); groups = g
+                                    Toast.makeText(this@MainActivity, "🔒 Lock screen set!", Toast.LENGTH_SHORT).show()
+                                },
+                                onActivateWallpaper = { launchWallpaperPicker() },
+                                onCreateGroup = { appState = AppState.GROUP_SCREEN },
+                                onJoinGroup = { appState = AppState.GROUP_SCREEN },
+                                onLeaveGroup = { groupId ->
+                                    GroupManager(currentUser!!.uid).leaveGroup(groupId) {
+                                        pairingPrefs.removeGroupRoomId("group_$groupId")
+                                        loadGroups(currentUser!!.uid)
+                                    }
                                 },
                                 onUnpair = {
                                     val uid = currentUser!!.uid
                                     val pUid = partnerUid ?: return@HomeScreen
                                     PairingManager(uid).unpair(pUid) {
                                         partnerUid = null
-                                        pairingPrefs.clear()
-                                        appState = AppState.NEEDS_PAIRING
+                                        pairingPrefs.clearCoupleOnly()
+                                        if (groups.isEmpty()) {
+                                            appState = AppState.NEEDS_PAIRING
+                                        }
+                                        // Stay on HOME if user has groups
                                     }
                                 },
                                 onSignOut = {
                                     val uid = currentUser!!.uid
                                     val pUid = partnerUid
-                                    if (pUid != null) {
-                                        PairingManager(uid).unpair(pUid) {
-                                            googleAuthManager.signOut()
-                                            currentUser = null
-                                            partnerUid = null
-                                            pairingPrefs.clear()
-                                            appState = AppState.SIGNED_OUT
-                                        }
-                                    } else {
+                                    val doSignOut = {
                                         googleAuthManager.signOut()
                                         currentUser = null
                                         partnerUid = null
+                                        groups = emptyList()
                                         pairingPrefs.clear()
                                         appState = AppState.SIGNED_OUT
                                     }
+                                    if (pUid != null) {
+                                        PairingManager(uid).unpair(pUid) { doSignOut() }
+                                    } else {
+                                        doSignOut()
+                                    }
+                                },
+                                onAutoSwitch = { showAutoSwitch = true }
+                            )
+
+                            // Auto-switch dialog
+                            if (showAutoSwitch) {
+                                val availableRooms = buildList {
+                                    val coupleRoom = pairingPrefs.getCoupleRoomId()
+                                    if (coupleRoom != null) {
+                                        add(Triple(coupleRoom, "couple", "❤️ Partner Canvas"))
+                                    }
+                                    groups.forEach { g ->
+                                        add(Triple(g.roomId, "group", "👥 ${g.name}"))
+                                    }
+                                }
+                                AutoSwitchDialog(
+                                    availableRooms = availableRooms,
+                                    onDismiss = { showAutoSwitch = false }
+                                )
+                            }
+                        }
+
+                        AppState.GROUP_SCREEN -> {
+                            GroupScreen(
+                                currentUid = currentUser!!.uid,
+                                displayName = currentUser?.displayName ?: "User",
+                                onGroupCreated = { groupId, roomId ->
+                                    pairingPrefs.addGroupRoomId(roomId)
+                                    loadGroups(currentUser!!.uid)
+                                    openCanvas(roomId)
+                                },
+                                onGroupJoined = { groupId, roomId ->
+                                    pairingPrefs.addGroupRoomId(roomId)
+                                    loadGroups(currentUser!!.uid)
+                                    appState = AppState.HOME
+                                },
+                                onBack = {
+                                    loadGroups(currentUser!!.uid)
+                                    appState = AppState.HOME
                                 }
                             )
+                        }
+
+                        AppState.CANVAS -> {
+                            // Canvas is now in its own activity, handled by openCanvas()
+                            // This state shouldn't normally be reached
+                            appState = AppState.HOME
                         }
                     }
                 }
@@ -189,9 +235,47 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Launch the system live wallpaper picker pre-selecting our WallPaper service.
-     */
+    override fun onResume() {
+        super.onResume()
+        // Refresh groups when returning from canvas
+        val user = currentUser
+        if (user != null && appState == AppState.HOME) {
+            loadGroups(user.uid)
+        }
+    }
+
+    private fun checkPairingAndLoadGroups(uid: String) {
+        PairingManager(uid).checkExistingPairing { existingPartner ->
+            if (existingPartner != null) {
+                partnerUid = existingPartner
+                pairingPrefs.savePairing(uid, existingPartner)
+            }
+            loadGroups(uid)
+            // Go to home if paired or has groups, otherwise needs pairing
+            if (existingPartner != null || pairingPrefs.getGroupRoomIds().isNotEmpty()) {
+                appState = AppState.HOME
+            } else {
+                appState = AppState.NEEDS_PAIRING
+            }
+        }
+    }
+
+    private fun loadGroups(uid: String) {
+        GroupManager(uid).getMyGroups { groupList ->
+            groups = groupList
+        }
+    }
+
+    private fun openCanvas(roomId: String) {
+        val intent = Intent(this, LiveLockscreenActivity::class.java).apply {
+            putExtra("roomId", roomId)
+            // Also pass UIDs for backward compat
+            putExtra("currentUid", currentUser?.uid)
+            putExtra("partnerUid", partnerUid)
+        }
+        startActivity(intent)
+    }
+
     private fun launchWallpaperPicker() {
         try {
             val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
@@ -202,7 +286,6 @@ class MainActivity : ComponentActivity() {
             }
             startActivity(intent)
         } catch (e: Exception) {
-            // Fallback: open generic live wallpaper picker
             try {
                 val intent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
                 startActivity(intent)

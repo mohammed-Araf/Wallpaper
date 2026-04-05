@@ -16,19 +16,23 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 
-class CanvasSyncManager(
-    private val currentUid: String,
-    private val partnerUid: String
+class CanvasSyncManager private constructor(
+    private val roomId: String
 ) {
     private val db = FirebaseDatabase.getInstance().reference
 
-    private val roomId: String = if (currentUid < partnerUid) {
-        "${currentUid}_${partnerUid}"
-    } else {
-        "${partnerUid}_${currentUid}"
-    }
-
     private val roomRef = db.child("canvas_sessions").child(roomId)
+
+    /** Couple constructor — computes room ID from two UIDs */
+    constructor(currentUid: String, partnerUid: String) : this(
+        if (currentUid < partnerUid) "${currentUid}_${partnerUid}"
+        else "${partnerUid}_${currentUid}"
+    )
+
+    companion object {
+        /** Group constructor — uses room ID directly */
+        fun forRoom(roomId: String): CanvasSyncManager = CanvasSyncManager(roomId)
+    }
     private val strokesRef = roomRef.child("strokes")
     private val stickersRef = roomRef.child("stickers")
     private val textsRef = roomRef.child("texts")
