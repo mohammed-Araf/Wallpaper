@@ -315,7 +315,7 @@ fun LiveCanvasScreen(
                             }
                         }
                         CanvasTool.IMAGE_TOOL -> Modifier
-                        // ── DEFAULT (NONE): seamless drag nearest element ──
+                        // ── DEFAULT (NONE): drag + pinch-to-zoom/rotate on elements ──
                         CanvasTool.NONE -> Modifier
                             .pointerInput("none_move") {
                                 awaitEachGesture {
@@ -325,20 +325,100 @@ fun LiveCanvasScreen(
                                     val found = findNearest(startPos.x, startPos.y)
 
                                     if (found != null) {
-                                        // ── Drag element ──
+                                        // ── Drag + pinch/rotate element ──
                                         dragType = found.first
                                         dragIndex = found.second
                                         isDraggingElement = true
                                         haptic()
 
-                                        var prevPos = startPos
+                                        var prevCentroid = startPos
+                                        var prevSpan = 0f
+                                        var prevAngle = 0f
+                                        var isMultiTouch = false
+
                                         do {
                                             val event = awaitPointerEvent()
-                                            val change = event.changes.firstOrNull() ?: break
-                                            if (change.pressed) {
-                                                change.consume()
-                                                val delta = change.position - prevPos
-                                                prevPos = change.position
+                                            val activePointers = event.changes.filter { it.pressed }
+                                            if (activePointers.isEmpty()) break
+
+                                            // Consume all changes
+                                            activePointers.forEach { it.consume() }
+
+                                            // Calculate centroid
+                                            val centroid = Offset(
+                                                activePointers.map { it.position.x }.average().toFloat(),
+                                                activePointers.map { it.position.y }.average().toFloat()
+                                            )
+
+                                            if (activePointers.size >= 2) {
+                                                // Multi-touch: pinch + rotate
+                                                val dx = activePointers[1].position.x - activePointers[0].position.x
+                                                val dy = activePointers[1].position.y - activePointers[0].position.y
+                                                val span = kotlin.math.sqrt(dx * dx + dy * dy)
+                                                val angle = kotlin.math.atan2(dy, dx) * (180f / Math.PI.toFloat())
+
+                                                if (!isMultiTouch) {
+                                                    // First frame of multi-touch — initialize
+                                                    isMultiTouch = true
+                                                    prevSpan = span
+                                                    prevAngle = angle
+                                                    prevCentroid = centroid
+                                                } else {
+                                                    // Calculate deltas
+                                                    val scaleFactor = if (prevSpan > 10f) span / prevSpan else 1f
+                                                    val rotationDelta = angle - prevAngle
+                                                    val panDelta = centroid - prevCentroid
+
+                                                    when (dragType) {
+                                                        SelectedType.STICKER -> {
+                                                            if (dragIndex in remoteStickers.indices) {
+                                                                val s = remoteStickers[dragIndex]
+                                                                syncManager.updateSticker(dragIndex, s.copy(
+                                                                    x = s.x + panDelta.x,
+                                                                    y = s.y + panDelta.y,
+                                                                    scale = (s.scale * scaleFactor).coerceIn(0.2f, 5f),
+                                                                    rotation = s.rotation + rotationDelta
+                                                                ))
+                                                            }
+                                                        }
+                                                        SelectedType.TEXT -> {
+                                                            if (dragIndex in remoteTexts.indices) {
+                                                                val t = remoteTexts[dragIndex]
+                                                                syncManager.updateText(dragIndex, t.copy(
+                                                                    x = t.x + panDelta.x,
+                                                                    y = t.y + panDelta.y,
+                                                                    scale = (t.scale * scaleFactor).coerceIn(0.2f, 5f),
+                                                                    rotation = t.rotation + rotationDelta
+                                                                ))
+                                                            }
+                                                        }
+                                                        SelectedType.IMAGE -> {
+                                                            if (dragIndex in remoteImages.indices) {
+                                                                val img = remoteImages[dragIndex]
+                                                                syncManager.updateImage(dragIndex, img.copy(
+                                                                    x = img.x + panDelta.x,
+                                                                    y = img.y + panDelta.y,
+                                                                    scale = (img.scale * scaleFactor).coerceIn(0.2f, 5f),
+                                                                    rotation = img.rotation + rotationDelta
+                                                                ))
+                                                            }
+                                                        }
+                                                        else -> {}
+                                                    }
+
+                                                    prevSpan = span
+                                                    prevAngle = angle
+                                                    prevCentroid = centroid
+                                                }
+                                            } else {
+                                                // Single touch: just drag
+                                                if (isMultiTouch) {
+                                                    // Transitioned back to single finger, reset
+                                                    isMultiTouch = false
+                                                    prevCentroid = centroid
+                                                }
+                                                val delta = centroid - prevCentroid
+                                                prevCentroid = centroid
 
                                                 var newY = 0f
                                                 when (dragType) {
