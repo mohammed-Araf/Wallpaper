@@ -59,18 +59,20 @@ class PairingManager(private val currentUid: String) {
 
     /**
      * Listen on users/{currentUid}/partner_uid for a value to appear.
-     * This fires when the partner claims our PIN and permanentlyLinkUsers is called.
+     * Uses both a realtime listener AND a polling fallback to ensure
+     * the code generator always gets notified.
      */
     private fun listenForPartner(onPartnerLinked: (String) -> Unit) {
         val userRef = db.child("users").child(currentUid).child("partner_uid")
+        var alreadyLinked = false
 
         partnerListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val partnerUid = snapshot.getValue(String::class.java)
-                if (partnerUid != null) {
-                    Log.d("PairingManager", "Partner linked! UID: $partnerUid")
+                if (partnerUid != null && !alreadyLinked) {
+                    alreadyLinked = true
+                    Log.d("PairingManager", "Partner linked via listener! UID: $partnerUid")
                     onPartnerLinked(partnerUid)
-                    // Stop listening once paired
                     userRef.removeEventListener(this)
                 }
             }
@@ -81,11 +83,32 @@ class PairingManager(private val currentUid: String) {
         }
 
         userRef.addValueEventListener(partnerListener!!)
+
+        // Polling fallback: check every 3 seconds in case the listener missed the event
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val pollRunnable = object : Runnable {
+            override fun run() {
+                if (alreadyLinked) return
+                userRef.get().addOnSuccessListener { snapshot ->
+                    val partnerUid = snapshot.getValue(String::class.java)
+                    if (partnerUid != null && !alreadyLinked) {
+                        alreadyLinked = true
+                        Log.d("PairingManager", "Partner linked via poll! UID: $partnerUid")
+                        onPartnerLinked(partnerUid)
+                        partnerListener?.let { userRef.removeEventListener(it) }
+                    } else if (!alreadyLinked) {
+                        handler.postDelayed(this, 3000)
+                    }
+                }
+            }
+        }
+        handler.postDelayed(pollRunnable, 3000)
     }
 
     /**
      * Call this when the partner enters the PIN on their screen.
-     * If valid and not expired, links both users permanently.
+     * If valid and not expired, links both users permanently using
+     * an atomic multi-path update.
      *
      * @param onResult (success, partnerUid?, errorMessage?)
      */
@@ -113,12 +136,15 @@ class PairingManager(private val currentUid: String) {
                     return@addOnSuccessListener
                 }
 
-                // Link the two UIDs together permanently
-                permanentlyLinkUsers(currentUid, partnerUid)
-
-                // Cleanup the pin
-                db.child("pairing_codes").child(pin).removeValue()
-                onResult(true, partnerUid, "Successfully paired!")
+                // Link both users atomically and wait for completion
+                permanentlyLinkUsers(currentUid, partnerUid) { success ->
+                    if (success) {
+                        db.child("pairing_codes").child(pin).removeValue()
+                        onResult(true, partnerUid, "Successfully paired!")
+                    } else {
+                        onResult(false, null, "Failed to save pairing. Try again.")
+                    }
+                }
             } else {
                 onResult(false, null, "Invalid PIN. Please check and try again.")
             }
@@ -127,19 +153,35 @@ class PairingManager(private val currentUid: String) {
         }
     }
 
-    private fun permanentlyLinkUsers(userA: String, userB: String) {
-        // userA is linked to userB
-        db.child("users").child(userA).child("partner_uid").setValue(userB)
-        // userB is linked to userA
-        db.child("users").child(userB).child("partner_uid").setValue(userA)
+    /**
+     * Atomically link two users using updateChildren for a single write.
+     * This ensures both partner_uid values are set together.
+     */
+    private fun permanentlyLinkUsers(userA: String, userB: String, onComplete: (Boolean) -> Unit) {
+        val updates = mapOf(
+            "users/$userA/partner_uid" to userB,
+            "users/$userB/partner_uid" to userA
+        )
+        db.updateChildren(updates)
+            .addOnSuccessListener {
+                Log.d("PairingManager", "Both users linked atomically: $userA <-> $userB")
+                onComplete(true)
+            }
+            .addOnFailureListener { e ->
+                Log.e("PairingManager", "Failed to link users: ${e.message}")
+                onComplete(false)
+            }
     }
 
     /**
      * Unpair the current user from their partner.
      */
     fun unpair(partnerUid: String, onComplete: () -> Unit) {
-        db.child("users").child(currentUid).child("partner_uid").removeValue()
-        db.child("users").child(partnerUid).child("partner_uid").removeValue()
+        val updates = mapOf<String, Any?>(
+            "users/$currentUid/partner_uid" to null,
+            "users/$partnerUid/partner_uid" to null
+        )
+        db.updateChildren(updates)
             .addOnCompleteListener { onComplete() }
     }
 
