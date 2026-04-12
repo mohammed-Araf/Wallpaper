@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -640,7 +641,7 @@ fun LiveCanvasScreen(
         )
 
         // ═══════════════════════════════════════════
-        // ██  TOP-RIGHT: Undo + BG Color  ██
+        // ██  TOP-RIGHT: Undo + Redo + BG Color  ██
         // ═══════════════════════════════════════════
         Row(
             modifier = Modifier.statusBarsPadding().padding(end = 12.dp, top = 8.dp).align(Alignment.TopEnd),
@@ -649,8 +650,17 @@ fun LiveCanvasScreen(
             SkeuButton(Icons.Rounded.Palette, isActive = false, tintColor = CyanAccent) {
                 haptic(); showBgColorPicker = true
             }
-            SkeuButton(Icons.AutoMirrored.Rounded.Undo, isActive = false, tintColor = TextPrimary) {
-                haptic(); syncManager.undoLast()
+            val hasUndo by syncManager.canUndo
+            val hasRedo by syncManager.canRedo
+            AnimatedVisibility(visible = hasUndo, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+                SkeuButton(Icons.AutoMirrored.Rounded.Undo, isActive = false, tintColor = TextPrimary) {
+                    haptic(); syncManager.undoLast()
+                }
+            }
+            AnimatedVisibility(visible = hasRedo, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+                SkeuButton(Icons.AutoMirrored.Rounded.Redo, isActive = false, tintColor = TextPrimary) {
+                    haptic(); syncManager.redoLast()
+                }
             }
         }
 

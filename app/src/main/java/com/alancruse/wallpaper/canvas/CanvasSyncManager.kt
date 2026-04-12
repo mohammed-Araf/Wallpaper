@@ -8,6 +8,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.toArgb
 import com.alancruse.wallpaper.ui.theme.DeepNavy
 import com.google.firebase.database.ChildEventListener
@@ -81,6 +82,7 @@ class CanvasSyncManager private constructor(
                 val stroke = snapshot.getValue(DrawingStroke::class.java) ?: return
                 strokeKeys.add(key)
                 sharedStrokes.add(stroke)
+                updateUndoRedoState()
             }
 
             override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
@@ -98,6 +100,7 @@ class CanvasSyncManager private constructor(
                 if (idx >= 0) {
                     strokeKeys.removeAt(idx)
                     sharedStrokes.removeAt(idx)
+                    updateUndoRedoState()
                 }
             }
 
@@ -119,6 +122,7 @@ class CanvasSyncManager private constructor(
                         stickerKeys.add(child.key!!)
                     }
                 }
+                updateUndoRedoState()
             }
             override fun onCancelled(error: DatabaseError) {
                 Log.e("CanvasSync", "Stickers error: ${error.message}")
@@ -136,6 +140,7 @@ class CanvasSyncManager private constructor(
                         textKeys.add(child.key!!)
                     }
                 }
+                updateUndoRedoState()
             }
             override fun onCancelled(error: DatabaseError) {
                 Log.e("CanvasSync", "Texts error: ${error.message}")
@@ -153,6 +158,7 @@ class CanvasSyncManager private constructor(
                         imageKeys.add(child.key!!)
                     }
                 }
+                updateUndoRedoState()
             }
             override fun onCancelled(error: DatabaseError) {
                 Log.e("CanvasSync", "Images error: ${error.message}")
@@ -339,7 +345,20 @@ class CanvasSyncManager private constructor(
         bgColorRef.setValue(argb)
     }
 
-    // ── Undo: remove the most recently added element across all types ──
+    // ── Undo / Redo state ──
+
+    data class UndoEntry(val type: String, val key: String, val data: Any)
+    private val redoStack = mutableListOf<UndoEntry>()
+    val canUndo = mutableStateOf(false)
+    val canRedo = mutableStateOf(false)
+
+    private fun updateUndoRedoState() {
+        val totalElements = sharedStrokes.size + sharedStickers.size + sharedTexts.size + sharedImages.size
+        canUndo.value = totalElements > 0
+        canRedo.value = redoStack.isNotEmpty()
+    }
+
+    // ── Undo: remove the most recently added element, save for redo ──
 
     fun undoLast() {
         var remaining = 4
@@ -351,10 +370,32 @@ class CanvasSyncManager private constructor(
             if (remaining == 0 && results.isNotEmpty()) {
                 val latest = results.maxByOrNull { it.ts }
                 if (latest != null) {
-                    roomRef.child(latest.ref).child(latest.key).removeValue()
+                    // Read the element data before removing for redo
+                    roomRef.child(latest.ref).child(latest.key)
+                        .addListenerForSingleValueEvent(object : ValueEventListener {
+                            override fun onDataChange(snapshot: DataSnapshot) {
+                                val data: Any? = when (latest.ref) {
+                                    "strokes" -> snapshot.getValue(DrawingStroke::class.java)
+                                    "stickers" -> snapshot.getValue(StickerElement::class.java)
+                                    "texts" -> snapshot.getValue(TextElement::class.java)
+                                    "images" -> snapshot.getValue(ImageElement::class.java)
+                                    else -> null
+                                }
+                                if (data != null) {
+                                    redoStack.add(UndoEntry(latest.ref, latest.key, data))
+                                    canRedo.value = true
+                                }
+                                // Now remove
+                                roomRef.child(latest.ref).child(latest.key).removeValue()
+                                    .addOnCompleteListener { updateUndoRedoState() }
+                            }
+                            override fun onCancelled(error: DatabaseError) {}
+                        })
                 }
             }
         }
+
+        // Clear redo stack when new actions happen (handled elsewhere)
 
         strokesRef.orderByChild("timestamp").limitToLast(1)
             .addListenerForSingleValueEvent(object : ValueEventListener {
@@ -403,6 +444,28 @@ class CanvasSyncManager private constructor(
                 }
                 override fun onCancelled(error: DatabaseError) { checkAndRemove() }
             })
+    }
+
+    // ── Redo: re-push the last undone element ──
+
+    fun redoLast() {
+        if (redoStack.isEmpty()) return
+        val entry = redoStack.removeAt(redoStack.lastIndex)
+        canRedo.value = redoStack.isNotEmpty()
+
+        when (entry.type) {
+            "strokes" -> strokesRef.push().setValue(entry.data)
+            "stickers" -> stickersRef.push().setValue(entry.data)
+            "texts" -> textsRef.push().setValue(entry.data)
+            "images" -> imagesRef.push().setValue(entry.data)
+        }
+        // canUndo will update via listener callbacks
+    }
+
+    /** Call when a new user action happens (draw, place sticker, etc.) to clear redo stack */
+    fun clearRedoStack() {
+        redoStack.clear()
+        canRedo.value = false
     }
 
     fun erasePointsNear(tapX: Float, tapY: Float, threshold: Float = 30f) {

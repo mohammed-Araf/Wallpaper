@@ -115,6 +115,10 @@ class MainActivity : ComponentActivity() {
                                     pairingPrefs.savePairing(currentUser!!.uid, pUid)
                                     loadGroups(currentUser!!.uid)
                                     appState = AppState.HOME
+                                },
+                                onSkipToGroups = {
+                                    loadGroups(currentUser!!.uid)
+                                    appState = AppState.HOME
                                 }
                             )
                         }

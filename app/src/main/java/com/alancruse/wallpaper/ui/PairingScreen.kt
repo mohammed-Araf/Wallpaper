@@ -36,7 +36,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun PairingScreen(
     currentUid: String,
-    onPairedSuccess: (String) -> Unit
+    onPairedSuccess: (String) -> Unit,
+    onSkipToGroups: () -> Unit = {}
 ) {
     val view = LocalView.current
     val pairingManager = remember { PairingManager(currentUid) }
@@ -417,6 +418,23 @@ fun PairingScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+            }
+
+            // Skip to Groups
+            Spacer(modifier = Modifier.height(24.dp))
+            TextButton(
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                    onSkipToGroups()
+                },
+                modifier = Modifier.padding(bottom = 24.dp)
+            ) {
+                Text(
+                    "Skip pairing · Use Groups only →",
+                    fontSize = 13.sp,
+                    color = CyanAccent,
+                    fontWeight = FontWeight.Medium
+                )
             }
         }
     }
