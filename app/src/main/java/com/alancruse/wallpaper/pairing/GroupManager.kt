@@ -49,24 +49,24 @@ class GroupManager(private val currentUid: String) {
         }
 
         val joinCode = generateJoinCode()
-        val roomId = "group_$groupId"
-
-        val groupData = mapOf(
-            "name" to name.take(20),
-            "ownerId" to currentUid,
-            "createdAt" to System.currentTimeMillis(),
-            "joinCode" to joinCode
-        )
 
         val memberData = mapOf(
             "name" to displayName,
             "joinedAt" to System.currentTimeMillis()
         )
 
-        // Write group info + add creator as member + add to user's groups
-        val updates = mapOf(
+        // Include members INSIDE groupData to avoid overlapping paths
+        val groupData = mapOf(
+            "name" to name.take(20),
+            "ownerId" to currentUid,
+            "createdAt" to System.currentTimeMillis(),
+            "joinCode" to joinCode,
+            "members" to mapOf(currentUid to memberData)
+        )
+
+        // Non-overlapping paths: groups/$groupId and users/$uid/groups/$groupId
+        val updates = mapOf<String, Any>(
             "groups/$groupId" to groupData,
-            "groups/$groupId/members/$currentUid" to memberData,
             "users/$currentUid/groups/$groupId" to true
         )
 
