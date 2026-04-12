@@ -149,8 +149,7 @@ class MainActivity : ComponentActivity() {
                                     Toast.makeText(this@MainActivity, "🔒 Lock screen set!", Toast.LENGTH_SHORT).show()
                                 },
                                 onActivateWallpaper = { launchWallpaperPicker() },
-                                onCreateGroup = { appState = AppState.GROUP_SCREEN },
-                                onJoinGroup = { appState = AppState.GROUP_SCREEN },
+                                onManageGroups = { appState = AppState.GROUP_SCREEN },
                                 onLeaveGroup = { groupId ->
                                     GroupManager(currentUser!!.uid).leaveGroup(groupId) {
                                         pairingPrefs.removeGroupRoomId("group_$groupId")
@@ -214,7 +213,8 @@ class MainActivity : ComponentActivity() {
                                 onGroupCreated = { groupId, roomId ->
                                     pairingPrefs.addGroupRoomId(roomId)
                                     loadGroups(currentUser!!.uid)
-                                    openCanvas(roomId)
+                                    // Go home so user sees the new group in the list
+                                    appState = AppState.HOME
                                 },
                                 onGroupJoined = { groupId, roomId ->
                                     pairingPrefs.addGroupRoomId(roomId)

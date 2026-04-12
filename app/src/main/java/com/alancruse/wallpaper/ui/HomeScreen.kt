@@ -60,8 +60,7 @@ fun HomeScreen(
     onSetWallpaper: (roomId: String, roomType: String) -> Unit,
     onSetLockscreen: (roomId: String, roomType: String) -> Unit,
     onActivateWallpaper: () -> Unit,
-    onCreateGroup: () -> Unit,
-    onJoinGroup: () -> Unit,
+    onManageGroups: () -> Unit,
     onLeaveGroup: (groupId: String) -> Unit,
     onUnpair: () -> Unit,
     onSignOut: () -> Unit,
@@ -220,21 +219,13 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth().alpha(headerAlpha),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Create Group
+                // Groups (Create or Join)
                 SmallActionButton(
                     icon = Icons.Rounded.GroupAdd,
-                    label = "Create",
+                    label = "Groups",
                     color = ElectricViolet,
                     modifier = Modifier.weight(1f),
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onCreateGroup() }
-                )
-                // Join Group
-                SmallActionButton(
-                    icon = Icons.Rounded.Link,
-                    label = "Join",
-                    color = CyanAccent,
-                    modifier = Modifier.weight(1f),
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onJoinGroup() }
+                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onManageGroups() }
                 )
                 // Auto-Switch
                 SmallActionButton(
