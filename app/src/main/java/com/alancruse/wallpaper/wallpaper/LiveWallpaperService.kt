@@ -45,6 +45,8 @@ class LiveWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             PairingPrefs(this@LiveWallpaperService).registerOnChangeListener(prefsListener)
             startListening()
+            // After the live wallpaper is applied, override lock screen if a separate one is set
+            triggerLockscreenOverride()
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
@@ -54,7 +56,12 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
-            if (visible) { startListening(); drawFrame() }
+            if (visible) {
+                startListening()
+                drawFrame()
+                // Re-apply lock screen override each time wallpaper becomes visible
+                triggerLockscreenOverride()
+            }
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
@@ -65,6 +72,21 @@ class LiveWallpaperService : WallpaperService() {
             super.onDestroy()
             stopListening()
             PairingPrefs(this@LiveWallpaperService).unregisterOnChangeListener(prefsListener)
+        }
+
+        /**
+         * If the user has a separate lock screen canvas configured,
+         * start the LockscreenWallpaperService to override the lock screen
+         * with a static bitmap (using FLAG_LOCK).
+         * Delayed by 2s to let Android finish applying the live wallpaper.
+         */
+        private fun triggerLockscreenOverride() {
+            val prefs = PairingPrefs(this@LiveWallpaperService)
+            if (prefs.lockscreenRoomId != null) {
+                handler.postDelayed({
+                    LockscreenWallpaperService.start(this@LiveWallpaperService)
+                }, 2000L)
+            }
         }
 
         private fun startListening() {

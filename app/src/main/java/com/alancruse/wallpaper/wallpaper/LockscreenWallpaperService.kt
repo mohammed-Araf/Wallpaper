@@ -92,6 +92,9 @@ class LockscreenWallpaperService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startListening()
+        // Force an immediate render to override lock screen NOW
+        // (e.g., after user sets live wallpaper which overrides both screens)
+        handler.postDelayed({ renderAndSetLockscreen() }, 1000L)
         return START_STICKY
     }
 
@@ -102,10 +105,11 @@ class LockscreenWallpaperService : Service() {
         if (roomId == null) {
             // No separate lock screen set — nothing to do
             stopListening()
+            stopSelf()
             return
         }
 
-        // Skip if already listening to this room
+        // If already listening to this room, don't re-register but still allow forced renders
         if (roomId == currentListeningRoomId && listeners.isNotEmpty()) return
 
         stopListening()
