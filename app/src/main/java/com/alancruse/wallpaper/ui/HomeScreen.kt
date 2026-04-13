@@ -72,6 +72,8 @@ fun HomeScreen(
     // Dialog states
     var showUnpairDialog by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
+    var leaveGroupId by remember { mutableStateOf<String?>(null) }
+    var leaveGroupName by remember { mutableStateOf("") }
 
     // Staggered entrance
     var visible by remember { mutableStateOf(false) }
@@ -192,7 +194,8 @@ fun HomeScreen(
                         onLeave = if (room.roomType == "group" && room.groupId != null) {
                             {
                                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                onLeaveGroup(room.groupId)
+                                leaveGroupName = room.displayName
+                                leaveGroupId = room.groupId
                             }
                         } else null,
                         onManage = if (room.roomType == "group" && room.groupId != null) {
@@ -330,6 +333,19 @@ fun HomeScreen(
                     waitSeconds = 5,
                     onConfirm = { showSignOutDialog = false; onSignOut() },
                     onDismiss = { showSignOutDialog = false }
+                )
+            }
+
+            // Timed confirm: Leave Group
+            leaveGroupId?.let { gid ->
+                TimedConfirmDialog(
+                    title = "Leave \"$leaveGroupName\"?",
+                    message = "You'll lose access to this group's canvas. If you're the last member, the group and all its canvas data will be deleted permanently.",
+                    confirmLabel = "Leave Group",
+                    accentColor = WarmRose,
+                    waitSeconds = 5,
+                    onConfirm = { leaveGroupId = null; onLeaveGroup(gid) },
+                    onDismiss = { leaveGroupId = null }
                 )
             }
         }
