@@ -160,7 +160,10 @@ class GroupManager(private val currentUid: String) {
     }
 
     /**
-     * Leave a group. If the user is the last member, the group is deleted.
+     * Leave a group.
+     * - If the user is the last member, the group and its canvas are deleted.
+     * - If the user is the owner and other members remain, ownership
+     *   transfers to the member who joined earliest.
      */
     fun leaveGroup(groupId: String, onComplete: () -> Unit) {
         // Remove user from group members and user's group list
@@ -170,15 +173,31 @@ class GroupManager(private val currentUid: String) {
         )
 
         db.updateChildren(updates).addOnSuccessListener {
-            // Check if group is now empty → delete it
-            db.child("groups").child(groupId).child("members")
+            // Check remaining members
+            db.child("groups").child(groupId)
                 .addListenerForSingleValueEvent(object : ValueEventListener {
                     override fun onDataChange(snapshot: DataSnapshot) {
-                        if (!snapshot.exists() || snapshot.childrenCount == 0L) {
-                            // Delete group and its canvas
+                        val membersSnap = snapshot.child("members")
+
+                        if (!membersSnap.exists() || membersSnap.childrenCount == 0L) {
+                            // No members left → delete group and canvas
                             db.child("groups").child(groupId).removeValue()
                             db.child("canvas_sessions").child("group_$groupId").removeValue()
                             Log.d("GroupManager", "Deleted empty group: $groupId")
+                        } else {
+                            // If the leaving user was the owner, transfer ownership
+                            val ownerId = snapshot.child("ownerId").getValue(String::class.java)
+                            if (ownerId == currentUid) {
+                                // Pick the member with the earliest joinedAt
+                                val nextOwner = membersSnap.children
+                                    .minByOrNull {
+                                        it.child("joinedAt").getValue(Long::class.java) ?: Long.MAX_VALUE
+                                    }?.key
+                                if (nextOwner != null) {
+                                    db.child("groups").child(groupId).child("ownerId").setValue(nextOwner)
+                                    Log.d("GroupManager", "Transferred ownership of $groupId to $nextOwner")
+                                }
+                            }
                         }
                         onComplete()
                     }
