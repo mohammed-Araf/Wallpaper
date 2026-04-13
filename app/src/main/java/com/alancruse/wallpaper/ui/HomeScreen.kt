@@ -61,12 +61,17 @@ fun HomeScreen(
     onSetLockscreen: (roomId: String, roomType: String) -> Unit,
     onActivateWallpaper: () -> Unit,
     onManageGroups: () -> Unit,
+    onManageGroup: (groupId: String) -> Unit,
     onLeaveGroup: (groupId: String) -> Unit,
     onUnpair: () -> Unit,
     onSignOut: () -> Unit,
     onAutoSwitch: () -> Unit
 ) {
     val view = LocalView.current
+
+    // Dialog states
+    var showUnpairDialog by remember { mutableStateOf(false) }
+    var showSignOutDialog by remember { mutableStateOf(false) }
 
     // Staggered entrance
     var visible by remember { mutableStateOf(false) }
@@ -189,6 +194,12 @@ fun HomeScreen(
                                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                 onLeaveGroup(room.groupId)
                             }
+                        } else null,
+                        onManage = if (room.roomType == "group" && room.groupId != null) {
+                            {
+                                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                onManageGroup(room.groupId)
+                            }
                         } else null
                     )
                 }
@@ -272,7 +283,7 @@ fun HomeScreen(
             ) {
                 if (partnerUid != null) {
                     OutlinedButton(
-                        onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onUnpair() },
+                        onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); showUnpairDialog = true },
                         modifier = Modifier.weight(1f).height(38.dp),
                         shape = RoundedCornerShape(14.dp),
                         border = BorderStroke(1.dp, WarmRose.copy(alpha = 0.3f)),
@@ -284,7 +295,7 @@ fun HomeScreen(
                     }
                 }
                 OutlinedButton(
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onSignOut() },
+                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); showSignOutDialog = true },
                     modifier = Modifier.weight(1f).height(38.dp),
                     shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.dp, GlassBorder),
@@ -294,6 +305,32 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Sign Out", fontSize = 11.sp, fontWeight = FontWeight.Medium)
                 }
+            }
+
+            // Timed confirm: Unpair
+            if (showUnpairDialog) {
+                TimedConfirmDialog(
+                    title = "Unpair from partner?",
+                    message = "This will disconnect your shared canvas. You won't be able to draw on each other's wallpaper anymore.",
+                    confirmLabel = "Unpair",
+                    accentColor = WarmRose,
+                    waitSeconds = 5,
+                    onConfirm = { showUnpairDialog = false; onUnpair() },
+                    onDismiss = { showUnpairDialog = false }
+                )
+            }
+
+            // Timed confirm: Sign Out
+            if (showSignOutDialog) {
+                TimedConfirmDialog(
+                    title = "Sign out?",
+                    message = "You'll be signed out of your account. Your canvases will remain but you won't be able to edit them.",
+                    confirmLabel = "Sign Out",
+                    accentColor = ErrorRed,
+                    waitSeconds = 5,
+                    onConfirm = { showSignOutDialog = false; onSignOut() },
+                    onDismiss = { showSignOutDialog = false }
+                )
             }
         }
     }
@@ -309,7 +346,8 @@ private fun CanvasCard(
     onOpen: () -> Unit,
     onSetHomeWallpaper: () -> Unit,
     onSetLockWallpaper: () -> Unit,
-    onLeave: (() -> Unit)?
+    onLeave: (() -> Unit)?,
+    onManage: (() -> Unit)? = null
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -415,6 +453,15 @@ private fun CanvasCard(
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(Icons.Rounded.Close, "Leave", tint = WarmRose.copy(alpha = 0.5f), modifier = Modifier.size(12.dp))
+                    }
+                }
+                // Manage group
+                if (onManage != null) {
+                    IconButton(
+                        onClick = onManage,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(Icons.Rounded.Settings, "Manage", tint = TextMuted, modifier = Modifier.size(12.dp))
                     }
                 }
             }

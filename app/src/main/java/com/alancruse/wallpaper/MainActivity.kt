@@ -32,7 +32,7 @@ import com.alancruse.wallpaper.wallpaper.LiveWallpaperService
 import com.google.firebase.auth.FirebaseUser
 
 private enum class AppState {
-    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, CANVAS
+    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, GROUP_MANAGE, CANVAS
 }
 
 class MainActivity : ComponentActivity() {
@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     // Canvas navigation state
     private var pendingRoomId by mutableStateOf<String?>(null)
     private var pendingRoomType by mutableStateOf<String?>(null)
+    private var managingGroupId by mutableStateOf<String?>(null)
 
     private val signInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -152,6 +153,10 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onActivateWallpaper = { launchWallpaperPicker() },
                                 onManageGroups = { appState = AppState.GROUP_SCREEN },
+                                onManageGroup = { groupId ->
+                                    managingGroupId = groupId
+                                    appState = AppState.GROUP_MANAGE
+                                },
                                 onLeaveGroup = { groupId ->
                                     GroupManager(currentUser!!.uid).leaveGroup(groupId) {
                                         pairingPrefs.removeGroupRoomId("group_$groupId")
@@ -228,6 +233,22 @@ class MainActivity : ComponentActivity() {
                                     appState = AppState.HOME
                                 }
                             )
+                        }
+
+                        AppState.GROUP_MANAGE -> {
+                            val gid = managingGroupId
+                            if (gid != null) {
+                                GroupManageScreen(
+                                    currentUid = currentUser!!.uid,
+                                    groupId = gid,
+                                    onBack = {
+                                        loadGroups(currentUser!!.uid)
+                                        appState = AppState.HOME
+                                    }
+                                )
+                            } else {
+                                appState = AppState.HOME
+                            }
                         }
 
                         AppState.CANVAS -> {

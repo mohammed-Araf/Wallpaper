@@ -34,6 +34,14 @@ class GroupManager(private val currentUid: String) {
         val roomId: String  // "group_{groupId}"
     )
 
+    data class MemberInfo(
+        val uid: String,
+        val name: String,
+        val joinedAt: Long,
+        val canEdit: Boolean = true,
+        val isBlocked: Boolean = false
+    )
+
     /**
      * Create a new group. Returns the groupId on success.
      */
@@ -109,6 +117,12 @@ class GroupManager(private val currentUid: String) {
                     // Check if already a member
                     if (groupSnapshot.child("members").hasChild(currentUid)) {
                         onResult(false, null, null, "You're already in this group!")
+                        return
+                    }
+
+                    // Check if blocked
+                    if (groupSnapshot.child("blocked").hasChild(currentUid)) {
+                        onResult(false, null, null, "You have been blocked from this group.")
                         return
                     }
 
@@ -215,6 +229,91 @@ class GroupManager(private val currentUid: String) {
                 }
                 override fun onCancelled(error: DatabaseError) { onResult(emptyList()) }
             })
+    }
+
+    /**
+     * Get detailed group info including member list.
+     */
+    fun getGroupDetails(
+        groupId: String,
+        onResult: (GroupInfo?, List<MemberInfo>) -> Unit
+    ) {
+        db.child("groups").child(groupId)
+            .addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (!snapshot.exists()) {
+                        onResult(null, emptyList())
+                        return
+                    }
+
+                    val info = GroupInfo(
+                        groupId = groupId,
+                        name = snapshot.child("name").getValue(String::class.java) ?: "Group",
+                        ownerId = snapshot.child("ownerId").getValue(String::class.java) ?: "",
+                        joinCode = snapshot.child("joinCode").getValue(String::class.java) ?: "",
+                        memberCount = snapshot.child("members").childrenCount.toInt(),
+                        roomId = "group_$groupId"
+                    )
+
+                    val members = snapshot.child("members").children.mapNotNull { memberSnap ->
+                        val uid = memberSnap.key ?: return@mapNotNull null
+                        MemberInfo(
+                            uid = uid,
+                            name = memberSnap.child("name").getValue(String::class.java) ?: "User",
+                            joinedAt = memberSnap.child("joinedAt").getValue(Long::class.java) ?: 0L,
+                            canEdit = memberSnap.child("canEdit").getValue(Boolean::class.java) != false,
+                            isBlocked = memberSnap.child("blocked").getValue(Boolean::class.java) == true
+                        )
+                    }.sortedBy { it.joinedAt }
+
+                    onResult(info, members)
+                }
+                override fun onCancelled(error: DatabaseError) { onResult(null, emptyList()) }
+            })
+    }
+
+    /**
+     * Remove a member from the group. Owner-only action.
+     */
+    fun removeMember(groupId: String, memberUid: String, onComplete: () -> Unit) {
+        val updates = mapOf<String, Any?>(
+            "groups/$groupId/members/$memberUid" to null,
+            "users/$memberUid/groups/$groupId" to null
+        )
+        db.updateChildren(updates)
+            .addOnSuccessListener {
+                Log.d("GroupManager", "Removed member $memberUid from group $groupId")
+                onComplete()
+            }
+            .addOnFailureListener { onComplete() }
+    }
+
+    /**
+     * Block a member — removes them and adds to blocked list so they can't rejoin.
+     */
+    fun blockMember(groupId: String, memberUid: String, onComplete: () -> Unit) {
+        val updates = mapOf<String, Any?>(
+            "groups/$groupId/members/$memberUid" to null,
+            "groups/$groupId/blocked/$memberUid" to true,
+            "users/$memberUid/groups/$groupId" to null
+        )
+        db.updateChildren(updates)
+            .addOnSuccessListener {
+                Log.d("GroupManager", "Blocked member $memberUid from group $groupId")
+                onComplete()
+            }
+            .addOnFailureListener { onComplete() }
+    }
+
+    /**
+     * Toggle a member's editing permission.
+     */
+    fun setEditPermission(groupId: String, memberUid: String, canEdit: Boolean, onComplete: () -> Unit) {
+        db.child("groups").child(groupId)
+            .child("members").child(memberUid)
+            .child("canEdit").setValue(canEdit)
+            .addOnSuccessListener { onComplete() }
+            .addOnFailureListener { onComplete() }
     }
 
     private fun generateJoinCode(): String {
