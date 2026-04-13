@@ -94,5 +94,10 @@
             </intent-filter>
         </service>
 
+        <!-- Lock screen wallpaper background service -->
+        <service
+            android:name=".wallpaper.LockscreenWallpaperService"
+            android:exported="false" />
+
     </application>
 </manifest>

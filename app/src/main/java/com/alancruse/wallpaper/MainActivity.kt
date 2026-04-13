@@ -144,6 +144,8 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onSetLockscreen = { roomId, roomType ->
                                     pairingPrefs.setLockscreenWallpaper(roomId, roomType)
+                                    // Start the lock screen wallpaper rendering service
+                                    com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.start(this@MainActivity)
                                     // Force recompose
                                     val g = groups; groups = emptyList(); groups = g
                                     Toast.makeText(this@MainActivity, "🔒 Lock screen set!", Toast.LENGTH_SHORT).show()
@@ -255,6 +257,10 @@ class MainActivity : ComponentActivity() {
                 pairingPrefs.savePairing(uid, existingPartner)
             }
             loadGroups(uid)
+            // Start lock screen service if a lockscreen room is set
+            if (pairingPrefs.lockscreenRoomId != null) {
+                com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.start(this)
+            }
             // Go to home if paired or has groups, otherwise needs pairing
             if (existingPartner != null || pairingPrefs.getGroupRoomIds().isNotEmpty()) {
                 appState = AppState.HOME
