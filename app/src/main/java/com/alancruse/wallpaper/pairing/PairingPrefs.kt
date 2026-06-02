@@ -143,6 +143,12 @@ class PairingPrefs(context: Context) {
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
     }
 
+    // ── Theme settings ──
+
+    var themeMode: String
+        get() = prefs.getString(KEY_THEME_MODE, "dark") ?: "dark"
+        set(value) = prefs.edit().putString(KEY_THEME_MODE, value).apply()
+
     // ── Clear ──
 
     fun clear() {
@@ -175,5 +181,6 @@ class PairingPrefs(context: Context) {
         private const val KEY_GROUP_ROOM_IDS = "group_room_ids"
         private const val KEY_AUTO_SWITCH_ENABLED = "auto_switch_enabled"
         private const val KEY_AUTO_SWITCH_SCHEDULE = "auto_switch_schedule"
+        private const val KEY_THEME_MODE = "theme_mode"
     }
 }

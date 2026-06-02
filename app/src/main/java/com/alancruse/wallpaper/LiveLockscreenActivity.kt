@@ -29,6 +29,14 @@ class LiveLockscreenActivity : ComponentActivity() {
 
         Log.d("Canvas", "Opening canvas: roomId=$roomId, current=$currentUid, partner=$partnerUid")
 
+        val prefs = com.alancruse.wallpaper.pairing.PairingPrefs(this)
+        val isSystemDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val darkTheme = when (prefs.themeMode) {
+            "dark" -> true
+            "light" -> false
+            else -> isSystemDark
+        }
+
         syncManager = try {
             if (!roomId.isNullOrEmpty()) {
                 // Direct room ID — for groups or any room
@@ -39,7 +47,7 @@ class LiveLockscreenActivity : ComponentActivity() {
             } else {
                 Log.e("Canvas", "Missing UIDs! roomId=$roomId, current=$currentUid, partner=$partnerUid")
                 setContent {
-                    WallPaperTheme {
+                    WallPaperTheme(darkTheme = darkTheme) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("Error: Missing user data. Please re-pair.", color = TextMuted)
                         }
@@ -50,7 +58,7 @@ class LiveLockscreenActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("Canvas", "Failed to create sync manager", e)
             setContent {
-                WallPaperTheme {
+                WallPaperTheme(darkTheme = darkTheme) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Error: Could not connect. Check your internet.", color = TextMuted)
                     }
@@ -60,7 +68,7 @@ class LiveLockscreenActivity : ComponentActivity() {
         }
 
         setContent {
-            WallPaperTheme {
+            WallPaperTheme(darkTheme = darkTheme) {
                 LiveCanvasScreen(
                     syncManager = syncManager!!,
                     onDone = { finish() }

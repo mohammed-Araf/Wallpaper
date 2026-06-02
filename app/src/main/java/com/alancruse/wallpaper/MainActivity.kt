@@ -12,9 +12,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,14 +27,13 @@ import com.alancruse.wallpaper.pairing.GroupManager
 import com.alancruse.wallpaper.pairing.PairingManager
 import com.alancruse.wallpaper.pairing.PairingPrefs
 import com.alancruse.wallpaper.ui.*
-import com.alancruse.wallpaper.ui.theme.DeepNavy
 import com.alancruse.wallpaper.ui.theme.CyanAccent
 import com.alancruse.wallpaper.ui.theme.WallPaperTheme
 import com.alancruse.wallpaper.wallpaper.LiveWallpaperService
 import com.google.firebase.auth.FirebaseUser
 
 private enum class AppState {
-    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, GROUP_MANAGE, CANVAS
+    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, GROUP_MANAGE, CANVAS, SETTINGS
 }
 
 class MainActivity : ComponentActivity() {
@@ -91,8 +92,15 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            WallPaperTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = DeepNavy) {
+            var currentThemeMode by remember { mutableStateOf(pairingPrefs.themeMode) }
+            val darkTheme = when (currentThemeMode) {
+                "dark" -> true
+                "light" -> false
+                else -> isSystemInDarkTheme()
+            }
+
+            WallPaperTheme(darkTheme = darkTheme) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     when (appState) {
                         AppState.LOADING -> {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -163,36 +171,8 @@ class MainActivity : ComponentActivity() {
                                         loadGroups(currentUser!!.uid)
                                     }
                                 },
-                                onUnpair = {
-                                    val uid = currentUser!!.uid
-                                    val pUid = partnerUid ?: return@HomeScreen
-                                    PairingManager(uid).unpair(pUid) {
-                                        partnerUid = null
-                                        pairingPrefs.clearCoupleOnly()
-                                        if (groups.isEmpty()) {
-                                            appState = AppState.NEEDS_PAIRING
-                                        }
-                                        // Stay on HOME if user has groups
-                                    }
-                                },
-                                onSignOut = {
-                                    val uid = currentUser!!.uid
-                                    val pUid = partnerUid
-                                    val doSignOut = {
-                                        googleAuthManager.signOut()
-                                        currentUser = null
-                                        partnerUid = null
-                                        groups = emptyList()
-                                        pairingPrefs.clear()
-                                        appState = AppState.SIGNED_OUT
-                                    }
-                                    if (pUid != null) {
-                                        PairingManager(uid).unpair(pUid) { doSignOut() }
-                                    } else {
-                                        doSignOut()
-                                    }
-                                },
-                                onAutoSwitch = { showAutoSwitch = true }
+                                onAutoSwitch = { showAutoSwitch = true },
+                                onOpenSettings = { appState = AppState.SETTINGS }
                             )
 
                             // Auto-switch dialog
@@ -249,6 +229,52 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 appState = AppState.HOME
                             }
+                        }
+
+                        AppState.SETTINGS -> {
+                            SettingsScreen(
+                                currentUser = currentUser!!,
+                                isPaired = partnerUid != null,
+                                partnerUid = partnerUid,
+                                themeMode = currentThemeMode,
+                                onThemeModeChange = { newMode ->
+                                    pairingPrefs.themeMode = newMode
+                                    currentThemeMode = newMode
+                                },
+                                onUnpair = {
+                                    val uid = currentUser!!.uid
+                                    val pUid = partnerUid ?: return@SettingsScreen
+                                    PairingManager(uid).unpair(pUid) {
+                                        partnerUid = null
+                                        pairingPrefs.clearCoupleOnly()
+                                        if (groups.isEmpty()) {
+                                            appState = AppState.NEEDS_PAIRING
+                                        } else {
+                                            appState = AppState.HOME
+                                        }
+                                    }
+                                },
+                                onSignOut = {
+                                    val uid = currentUser!!.uid
+                                    val pUid = partnerUid
+                                    val doSignOut = {
+                                        googleAuthManager.signOut()
+                                        currentUser = null
+                                        partnerUid = null
+                                        groups = emptyList()
+                                        pairingPrefs.clear()
+                                        appState = AppState.SIGNED_OUT
+                                    }
+                                    if (pUid != null) {
+                                        PairingManager(uid).unpair(pUid) { doSignOut() }
+                                    } else {
+                                        doSignOut()
+                                    }
+                                },
+                                onBack = {
+                                    appState = AppState.HOME
+                                }
+                            )
                         }
 
                         AppState.CANVAS -> {

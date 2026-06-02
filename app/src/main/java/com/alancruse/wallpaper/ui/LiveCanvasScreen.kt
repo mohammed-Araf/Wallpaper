@@ -151,9 +151,11 @@ fun LiveCanvasScreen(
 
     // Background color
     var showBgColorPicker by remember { mutableStateOf(false) }
-    val bgCyclePresets = remember {
+    val currentBg = DeepNavy
+    val currentSurf = DarkSurface
+    val bgCyclePresets = remember(currentBg, currentSurf) {
         listOf(
-            DeepNavy, DarkSurface, Color.Black,
+            currentBg, currentSurf, Color.Black,
             Color(0xFF1A1A2E), Color(0xFF16213E), Color(0xFF0F3460),
             Color(0xFF2C003E), Color(0xFF1B1B2F), Color(0xFF162447),
             Color(0xFF1F4068), Color(0xFF203040), Color(0xFF2D4059),

@@ -63,15 +63,12 @@ fun HomeScreen(
     onManageGroups: () -> Unit,
     onManageGroup: (groupId: String) -> Unit,
     onLeaveGroup: (groupId: String) -> Unit,
-    onUnpair: () -> Unit,
-    onSignOut: () -> Unit,
-    onAutoSwitch: () -> Unit
+    onAutoSwitch: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     val view = LocalView.current
 
     // Dialog states
-    var showUnpairDialog by remember { mutableStateOf(false) }
-    var showSignOutDialog by remember { mutableStateOf(false) }
     var leaveGroupId by remember { mutableStateOf<String?>(null) }
     var leaveGroupName by remember { mutableStateOf("") }
 
@@ -142,18 +139,44 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // ── Header ──
-            Box(
+            Row(
                 modifier = Modifier
-                    .scale(headerScale)
-                    .alpha(headerAlpha)
-                    .size(48.dp)
-                    .background(SuccessGreen.copy(alpha = 0.1f), CircleShape)
-                    .border(1.5.dp, SuccessGreen.copy(alpha = statusPulse * 0.4f), CircleShape),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .alpha(headerAlpha),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Rounded.FavoriteBorder, "Connected",
-                    tint = SuccessGreen.copy(alpha = statusPulse),
-                    modifier = Modifier.size(22.dp))
+                Spacer(modifier = Modifier.width(40.dp)) // balance spacer
+
+                Box(
+                    modifier = Modifier
+                        .scale(headerScale)
+                        .size(48.dp)
+                        .background(SuccessGreen.copy(alpha = 0.1f), CircleShape)
+                        .border(1.5.dp, SuccessGreen.copy(alpha = statusPulse * 0.4f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.FavoriteBorder, "Connected",
+                        tint = SuccessGreen.copy(alpha = statusPulse),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                        onOpenSettings()
+                    },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.Settings,
+                        contentDescription = "Settings",
+                        tint = TextPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -278,63 +301,6 @@ fun HomeScreen(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            // Bottom row
-            Row(
-                modifier = Modifier.fillMaxWidth().alpha(headerAlpha),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (partnerUid != null) {
-                    OutlinedButton(
-                        onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); showUnpairDialog = true },
-                        modifier = Modifier.weight(1f).height(38.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, WarmRose.copy(alpha = 0.3f)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = WarmRose)
-                    ) {
-                        Icon(Icons.Rounded.LinkOff, null, modifier = Modifier.size(13.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Unpair", fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                OutlinedButton(
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); showSignOutDialog = true },
-                    modifier = Modifier.weight(1f).height(38.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, GlassBorder),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted)
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.Logout, null, modifier = Modifier.size(13.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Sign Out", fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-
-            // Timed confirm: Unpair
-            if (showUnpairDialog) {
-                TimedConfirmDialog(
-                    title = "Unpair from partner?",
-                    message = "This will disconnect your shared canvas. You won't be able to draw on each other's wallpaper anymore.",
-                    confirmLabel = "Unpair",
-                    accentColor = WarmRose,
-                    waitSeconds = 5,
-                    onConfirm = { showUnpairDialog = false; onUnpair() },
-                    onDismiss = { showUnpairDialog = false }
-                )
-            }
-
-            // Timed confirm: Sign Out
-            if (showSignOutDialog) {
-                TimedConfirmDialog(
-                    title = "Sign out?",
-                    message = "You'll be signed out of your account. Your canvases will remain but you won't be able to edit them.",
-                    confirmLabel = "Sign Out",
-                    accentColor = ErrorRed,
-                    waitSeconds = 5,
-                    onConfirm = { showSignOutDialog = false; onSignOut() },
-                    onDismiss = { showSignOutDialog = false }
-                )
-            }
 
             // Timed confirm: Leave Group
             leaveGroupId?.let { gid ->
