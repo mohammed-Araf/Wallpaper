@@ -53,8 +53,8 @@ object LiveTracker {
     private val roomNeeds = HashMap<String, Needs>()
     /** Other people's Me stickers per room (uid → name plate), for the battery buddy. */
     private val roomAvatars = HashMap<String, Map<String, String>>()
-    /** Shared pets per room, for the "hungry" reminder. */
-    private val roomPets = HashMap<String, List<StickerElement>>()
+    /** Every sticker per room with its key, so the pet's meals can be written back. */
+    private val roomPets = HashMap<String, List<Pair<String, StickerElement>>>()
     private val distRooms get() = roomNeeds.filterValues { it.dist }.keys
     private val needSteps get() = roomNeeds.values.any { it.steps }
     private val needLocation get() = roomNeeds.values.any { it.dist || it.location }
@@ -111,7 +111,8 @@ object LiveTracker {
             val l = object : ValueEventListener {
                 override fun onDataChange(s: DataSnapshot) {
                     val me = uid
-                    val st = s.children.mapNotNull { it.getValue(StickerElement::class.java) }
+                    val keyed = s.children.mapNotNull { c -> c.getValue(StickerElement::class.java)?.let { (c.key ?: "") to it } }
+                    val st = keyed.map { it.second }
                     roomNeeds[id] = Needs(
                         st.any { it.kind == "w:dist" },
                         st.any { it.owner == me && StickerKinds.needsSteps(it.kind) },
@@ -120,7 +121,7 @@ object LiveTracker {
                     )
                     roomAvatars[id] = st.filter { StickerKinds.needsStatus(it.kind) && it.owner.isNotEmpty() && it.owner != me }
                         .associate { it.owner to it.label }
-                    roomPets[id] = st.filter { StickerKinds.isPet(it.kind) }
+                    roomPets[id] = if (st.any { StickerKinds.isPet(it.kind) }) keyed else emptyList()
                     apply()
                     checkBatteries()
                     checkPets()
@@ -249,10 +250,12 @@ object LiveTracker {
         }
     }
 
-    // ═════════ Pet reminder ═════════
+    // ═════════ Pet: meals and reminders ═════════
     //
-    // One notification per meal when a shared pet gets hungry (never at night: it waits
-    // until 9 am). Whoever feeds it resets everyone's reminder.
+    // Meals happen on every phone's screen by themselves (see Pet.meals); whichever phone
+    // notices one has finished writes it down (fedAt, streak) and clears the empty bowl.
+    // The writes are idempotent, so two phones doing it at once is fine. Reminders: hungry
+    // (14 h), weak (48 h) and died (72 h), once each per meal, not at night.
 
     private const val PET_CHANNEL = "pet"
     private val petCheck = Runnable { if (refs > 0) checkPets() }
@@ -260,25 +263,48 @@ object LiveTracker {
     private fun checkPets() {
         handler.removeCallbacks(petCheck)
         val now = System.currentTimeMillis()
-        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        val day = hour in 9..21
+        val day = Calendar.getInstance().get(Calendar.HOUR_OF_DAY) in 9..21
         var next = Long.MAX_VALUE
-        for ((room, pets) in roomPets) for (p in pets) {
-            val at = Pet.hungryAt(p)
-            if (at <= 0L) continue
-            if (now < at) { next = minOf(next, at); continue }
-            if (prefs.getLong("pet_hungry_$room", 0L) == p.fedAt || now - at > 24 * Pet.HOUR) continue
-            if (!day) { next = minOf(next, now + Pet.HOUR); continue }
-            prefs.edit().putLong("pet_hungry_$room", p.fedAt).apply()
-            val name = p.label.ifBlank { "Your pet" }
-            val streak = Pet.streak(p, now)
-            notify(
-                PET_CHANNEL, "Pet", "When your shared pet gets hungry",
-                "pet:$room".hashCode(), "🐾 $name is hungry",
-                if (streak > 1) "Feed $name to keep your $streak-day streak going" else "Open the canvas and feed $name",
-            )
+        for ((room, keyed) in roomPets) {
+            if (keyed.isEmpty()) continue
+            val world = keyed.map { it.second }
+            val ref = db.child("canvas_sessions").child(room).child("stickers")
+            for ((key, p0) in keyed) {
+                if (!StickerKinds.isPet(p0.kind) || key.isEmpty()) continue
+                var p = p0
+                // Write down finished meals and clear their bowls
+                for (m in Pet.meals(p0, world, now)) {
+                    // Leave the bowl until it has wandered off (4 s), so nothing jumps.
+                    if (m.end + 5_000L > now) { next = minOf(next, m.end + 5_000L); break }
+                    if (m.end <= p.fedAt) continue
+                    p = Pet.fed(p, m.food.label, m.end)
+                    ref.child(key).updateChildren(mapOf("fedAt" to p.fedAt, "careBy" to p.careBy, "streak" to p.streak, "streakDay" to p.streakDay))
+                    keyed.firstOrNull { it.second === m.food }?.first?.takeIf { it.isNotEmpty() }?.let { ref.child(it).removeValue() }
+                }
+                // Food waiting until it's hungry enough to bother
+                if (world.any { StickerKinds.isFood(it.kind) }) next = minOf(next, maxOf(now + 30_000L, p.fedAt + Pet.FULL_FOR))
+                if (p.fedAt <= 0L) continue
+                val name = p.label.ifBlank { "Your pet" }
+                val marks = Pet.hungerMarks(p)
+                val level = marks.count { now >= it }   // 0 fine · 1 hungry · 2 weak · 3 dead
+                marks.firstOrNull { now < it }?.let { next = minOf(next, it) }
+                if (level == 0) continue
+                val noteKey = "pet_note_${room}_$key"
+                val last = prefs.getString(noteKey, "") ?: ""
+                val tag = "${p.fedAt}:$level"
+                if (last == tag || now - marks[level - 1] > 24 * Pet.HOUR) continue
+                if (!day) { next = minOf(next, now + Pet.HOUR); continue }
+                prefs.edit().putString(noteKey, tag).apply()
+                val streak = Pet.streak(p, now)
+                val (title, text) = when (level) {
+                    1 -> "🐾 $name is hungry" to (if (streak > 1) "Drop some food to keep your $streak-day streak going" else "Open the canvas and drop some food")
+                    2 -> "🥺 $name is very weak" to "$name hasn't eaten in 2 days. Feed them now or they won't make it"
+                    else -> "💔 $name has died" to "They went 3 days without food. Open the canvas to say goodbye"
+                }
+                notify(PET_CHANNEL, "Pet", "When your shared pet needs you", "pet:$room:$key".hashCode(), title, text)
+            }
         }
-        if (next != Long.MAX_VALUE) handler.postDelayed(petCheck, (next - now).coerceIn(60_000L, 6 * Pet.HOUR))
+        if (next != Long.MAX_VALUE) handler.postDelayed(petCheck, (next - now).coerceIn(5_000L, 6 * Pet.HOUR))
     }
 
     // ═════════ Ghost mode ═════════

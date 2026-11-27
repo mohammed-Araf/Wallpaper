@@ -201,6 +201,7 @@ object CanvasRenderer {
         roomId: String? = null,
     ) {
         if (bgColor != null) canvas.drawColor(bgColor)
+        StickerArt.world = stickers
         val layers = ArrayList<Layer>(strokes.size + stickers.size + texts.size + images.size)
         strokes.forEachIndexed { i, s -> layers.add(Layer(s.timestamp, 0, i)) }
         stickers.forEachIndexed { i, s -> layers.add(Layer(s.timestamp, 1, i)) }

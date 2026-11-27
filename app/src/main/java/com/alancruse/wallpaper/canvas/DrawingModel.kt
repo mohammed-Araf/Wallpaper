@@ -45,6 +45,8 @@ data class StickerElement(
     val streak: Int = 0,
     /** Day (yyyy-MM-dd, the carer's calendar) of the feeding that counted towards [streak]. */
     val streakDay: String = "",
+    /** Shared pet: when it was adopted (its age decides baby → young → adult → old). */
+    val bornAt: Long = 0L,
     val timestamp: Long = System.currentTimeMillis()
 )
 

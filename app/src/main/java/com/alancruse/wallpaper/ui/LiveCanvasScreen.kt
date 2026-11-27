@@ -188,6 +188,8 @@ fun LiveCanvasScreen(
     // Element drag → dustbin
     var draggingEl by remember { mutableStateOf(false) }
     var overBin by remember { mutableStateOf(false) }
+    // Dragging a pet that has died: the bin becomes a pit, and dropping it there buries it.
+    var pitMode by remember { mutableStateOf(false) }
 
     // Live stroke
     val livePoints = remember { ArrayList<Point>() }
@@ -291,9 +293,12 @@ fun LiveCanvasScreen(
             return Offset((dx * cos(r) - dy * sin(r)).toFloat(), (dx * sin(r) + dy * cos(r)).toFloat())
         }
         sync.sharedStickers.forEachIndexed { i, s ->
-            val size = s.size * s.scale
-            val l = local(s.x, s.y, s.rotation)
-            val dx = l.x; val dy = l.y + size * 0.35f
+            val pet = StickerKinds.isPet(s.kind)
+            val size = s.size * s.scale * (if (pet) StickerArt.petScale(s) else 1f)
+            val (ax, ay) = if (pet) StickerArt.petAnchor(s) else s.x to s.y
+            val l = local(ax, ay, s.rotation)
+            // Pets draw from their feet up; their box is centred a bit lower.
+            val dx = l.x; val dy = l.y + size * 0.35f - (if (pet) size * 0.2f else 0f)
             if (s.kind.isNotEmpty()) {
                 val (hw, hh) = StickerArt.halfSize(s.kind); val u = size / 100f
                 if (abs(dx) < hw * u + slack && abs(dy) < hh * u + slack) take(ElType.STICKER, i, s.timestamp)
@@ -332,6 +337,9 @@ fun LiveCanvasScreen(
             }
         }
     }
+
+    fun isDeadPet(el: Pair<ElType, Int>?) = el != null && el.first == ElType.STICKER &&
+        sync.sharedStickers.getOrNull(el.second)?.let { StickerKinds.isPet(it.kind) && Pet.isDead(it, sync.sharedStickers, System.currentTimeMillis()) } == true
 
     fun deleteEl(el: Pair<ElType, Int>) = when (el.first) {
         ElType.STICKER -> sync.deleteSticker(el.second)
@@ -396,6 +404,7 @@ fun LiveCanvasScreen(
                             Tool.ERASER -> if (canEdit && !eraseWhole) { eraserPos = startCanvas; sync.erasePointsNear(startCanvas.x, startCanvas.y, eraserWidth / viewScale) }
                             Tool.MOVE, Tool.TEXT -> if (canEdit) {
                                 grabbed = hitTest(startCanvas)
+                                pitMode = isDeadPet(grabbed)
                             }
                         }
 
@@ -474,6 +483,7 @@ fun LiveCanvasScreen(
                                 if (canEdit && grabbed == null && pressed.size == 2) {
                                     grabbed = hitTest(toCanvas(centroid))
                                         ?: pressed.firstNotNullOfOrNull { hitTest(toCanvas(it.position)) }
+                                    pitMode = isDeadPet(grabbed)
                                 }
                                 if (grabbed != null && !draggingEl) { draggingEl = true; haptic(Haptic.Tick) }
                             }
@@ -524,7 +534,11 @@ fun LiveCanvasScreen(
                                 Tool.MOVE, Tool.TEXT -> {
                                     val g = grabbed
                                     if (g != null) {
-                                        if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
+                                        if (draggingEl && overBin && pitMode) {
+                                            val name = sync.sharedStickers.getOrNull(g.second)?.label?.ifBlank { null } ?: "little one"
+                                            deleteEl(g); haptic(Haptic.Reject)
+                                            Toast.makeText(context, "Rest in peace, $name 🐾", Toast.LENGTH_LONG).show()
+                                        } else if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
                                         else if (!draggingEl && g.first == ElType.TEXT) {
                                             sync.sharedTexts.getOrNull(g.second)?.let { t -> editing = TextEdit(t, g.second) }
                                         } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.TEXT &&
@@ -579,7 +593,7 @@ fun LiveCanvasScreen(
                                 }
                             }
                         }
-                        draggingEl = false; overBin = false
+                        draggingEl = false; overBin = false; pitMode = false
                     }
                 }
         ) {
@@ -849,7 +863,16 @@ fun LiveCanvasScreen(
                 enter = fadeIn() + scaleIn(spring(0.5f, 400f)), exit = fadeOut() + scaleOut()
             ) {
                 val s by animateFloatAsState(if (overBin) 1.25f else 1f, spring(0.5f, 500f), label = "bin")
-                Box(
+                if (pitMode) {
+                    // Easter egg: a dead pet gets a little pit instead of the bin.
+                    Canvas(Modifier.size((150 * s).dp, (96 * s).dp)) {
+                        val k = size.width / 110f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height * 0.62f); nc.scale(k, k)
+                        StickerArt.pit(nc, frameMs, overBin)
+                        nc.restore()
+                    }
+                } else Box(
                     Modifier.size((64 * s).dp).glass(CircleShape, strong = true, tint = if (overBin) ErrorRed.copy(alpha = 0.6f) else null),
                     contentAlignment = Alignment.Center
                 ) { Icon(Icons.Rounded.DeleteOutline, "Delete", tint = if (overBin) Color.White else c.textPrimary, modifier = Modifier.size((28 * s).dp)) }
@@ -915,6 +938,14 @@ fun LiveCanvasScreen(
                                 petEdit = null to StickerElement(kind = k, look = Pet.Look().encode())
                                 return@StickerMarket
                             }
+                            if (StickerKinds.isFood(k)) {
+                                val p = visibleCenter()
+                                sync.pushSticker(StickerElement(emoji = FallbackEmoji[k] ?: "🥣", kind = k,
+                                    label = FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "",
+                                    x = p.x, y = p.y, size = 110f / viewScale))
+                                haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
+                                return@StickerMarket
+                            }
                             if (StickerKinds.isCountdown(k)) {
                                 showStickers = false
                                 val cal = java.util.Calendar.getInstance().apply {
@@ -967,23 +998,28 @@ fun LiveCanvasScreen(
                     // Show the live sticker so feeding/playing (by anyone) updates the sheet.
                     val live = idx?.let { sync.sharedStickers.getOrNull(it) }?.takeIf { StickerKinds.isPet(it.kind) } ?: pe.second
                     PetSheet(
-                        live, isNew = idx == null,
-                        onFeed = {
-                            val fed = Pet.feed(live, me, System.currentTimeMillis())
-                            if (fed == null) Toast.makeText(context, "${live.label.ifBlank { "Your pet" }} isn't hungry yet", Toast.LENGTH_SHORT).show()
-                            else { idx?.let { sync.updateSticker(it, fed) }; haptic(Haptic.Confirm) }
+                        live, isNew = idx == null, dead = Pet.isDead(live, sync.sharedStickers, System.currentTimeMillis()),
+                        onFood = {
+                            // Drop a bowl a little way off so you can watch it run over.
+                            val (ax, ay) = StickerArt.petAnchor(live)
+                            val off = 160f / viewScale
+                            val fx = (ax + if (ax > visibleCenter().x) -off else off)
+                            sync.pushSticker(StickerElement(emoji = FallbackEmoji["w:food"] ?: "🥣", kind = "w:food", label = me,
+                                x = fx, y = ay + 10f / viewScale, size = 110f / viewScale))
+                            haptic(Haptic.Confirm); petEdit = null; tool = Tool.MOVE
                         },
                         onPlay = { idx?.let { sync.updateSticker(it, Pet.play(live, me, System.currentTimeMillis())) }; haptic(Haptic.Confirm) },
                     ) { name, look ->
                         if (idx == null) {
                             val p = visibleCenter()
+                            val now = System.currentTimeMillis()
                             // Adopting counts as its first meal (and day 1 of the streak).
                             val pet = StickerElement(
                                 emoji = FallbackEmoji["w:pet"] ?: "🐾", kind = "w:pet",
                                 owner = FirebaseAuth.getInstance().currentUser?.uid ?: "",
-                                label = name, look = look, x = p.x, y = p.y, size = 170f / viewScale
+                                label = name, look = look, bornAt = now, x = p.x, y = p.y, size = 150f / viewScale
                             )
-                            sync.pushSticker(Pet.feed(pet, me, System.currentTimeMillis()) ?: pet)
+                            sync.pushSticker(Pet.fed(pet, me, now))
                             tool = Tool.MOVE
                         } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(label = name, look = look)) }
                         haptic(Haptic.Confirm); petEdit = null
@@ -1125,13 +1161,13 @@ private val FallbackEmoji = mapOf(
     "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
     "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
     "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆", "w:me" to "🧍",
-    "w:clock" to "🕒", "w:analog" to "🕰️", "w:countdown" to "⏳", "w:pet" to "🐾",
+    "w:clock" to "🕒", "w:analog" to "🕰️", "w:countdown" to "⏳", "w:pet" to "🐾", "w:food" to "🥣",
 )
 
 /** Adopt the shared pet (name, species, colour), or feed / play with / rename it. */
 @Composable
 private fun PetSheet(
-    pet: StickerElement, isNew: Boolean, onFeed: () -> Unit, onPlay: () -> Unit,
+    pet: StickerElement, isNew: Boolean, dead: Boolean, onFood: () -> Unit, onPlay: () -> Unit,
     onSave: (name: String, look: String) -> Unit,
 ) {
     val c = LocalWallpaperColors.current
@@ -1160,18 +1196,25 @@ private fun PetSheet(
             val streak = Pet.streak(pet, now)
             val who = pet.careBy.ifBlank { null }
             val last = maxOf(pet.fedAt, pet.playedAt)
+            val stage = Pet.stage(pet, now)
+            val age = Pet.ageDays(pet, now)
+            val stageName = when (stage) { Pet.Stage.BABY -> "Baby"; Pet.Stage.YOUNG -> "Young"; Pet.Stage.ADULT -> "Grown up"; Pet.Stage.OLD -> "Old timer" }
             Text(
-                buildString {
-                    if (who != null && last > 0) append("Last looked after by $who · ${android.text.format.DateUtils.getRelativeTimeSpanString(last, now, 60_000L)}")
-                    if (streak > 0) { if (isNotEmpty()) append("\n"); append("🔥 $streak-day streak. Feed it every day to keep it going") }
+                if (dead) "${pet.label.ifBlank { "Your pet" }} has died after $age ${if (age == 1) "day" else "days"} 💔\nHold and drag them down to the bin to bury them, then adopt a new one."
+                else buildString {
+                    append("$stageName · $age ${if (age == 1) "day" else "days"} old")
+                    if (who != null && last > 0) append("\nLast looked after by $who · ${android.text.format.DateUtils.getRelativeTimeSpanString(last, now, 60_000L)}")
+                    if (streak > 0) append("\n🔥 $streak-day streak. Feed it every day to keep it going")
+                    if (now - pet.fedAt >= Pet.HUNGRY_AFTER) append("\nIt's hungry. Drop some food before it gets too weak")
                 },
-                color = c.textSecondary, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                color = if (dead) c.textPrimary else c.textSecondary, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
             )
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                AccentButton(onFeed, Modifier.weight(1f), text = "Feed")
+            if (!dead) Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AccentButton(onFood, Modifier.weight(1f), text = "Drop food")
                 AccentButton(onPlay, Modifier.weight(1f), text = "Play")
             }
         }
+        if (!dead) {
         Label("Name")
         GlassTextField(name, { if (it.length <= 12) name = it }, placeholder = "Mochi", leadingIcon = Icons.Rounded.Pets)
         Label("Pet")
@@ -1208,11 +1251,12 @@ private fun PetSheet(
             }
         }
         Text(
-            if (isNew) "Everyone in this canvas shares the pet. It gets hungry over time, so feed it each day to build a streak."
+            if (isNew) "Everyone in this canvas shares the pet. It starts as a baby and grows up over a month. Drop food from the Live tab or its sheet and it runs over to eat. Starve it for 3 days and it dies."
             else "Anyone in this canvas can feed it, play with it or rename it.",
             color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)
         )
         AccentButton({ onSave(name.trim(), look.encode()) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Adopt" else "Save")
+        }
     }
 }
 

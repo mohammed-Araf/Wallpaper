@@ -106,33 +106,34 @@ class AvatarRenderTest {
     @Test
     fun renderPets() {
         val out = File(System.getProperty("avatar.out") ?: "build/avatar").apply { mkdirs() }
-        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Kolkata"))
-        val noon = 1795943400000L       // 29 Nov 2026 12:00 IST
-        val today = "2026-11-29"
-        val h = Pet.HOUR
-        // label, species, colour, now, fedAt, playedAt, streak
-        data class Case(val name: String, val sp: Int, val col: Int, val now: Long, val fed: Long, val played: Long, val streak: Int)
-        val cases = listOf(
-            Case("Mochi", 0, 0, noon, noon - h, 0, 5),                       // happy
-            Case("Bruno", 1, 3, noon, noon - 20_000, 0, 12),                 // eating
-            Case("Coco", 2, 1, noon, noon - 3 * h, noon - 10_000, 2),       // playing
-            Case("Mochi", 0, 2, noon, noon - 8 * h, 0, 1),                  // peckish
-            Case("Bruno", 1, 0, noon, noon - 16 * h, 0, 0),                 // hungry
-            Case("Coco", 2, 4, noon, noon - 40 * h, 0, 0),                  // sad
-            Case("Mochi", 0, 1, noon + 12 * h, noon + 7 * h, 0, 3),         // sleeping (midnight)
-            Case("Bruno", 1, 1, noon + 12 * h, noon + 9 * h, 0, 3),         // sleeping dog
-            Case("Coco", 2, 3, noon + 12 * h, noon + 9 * h, 0, 3),          // sleeping bunny
+        val cols = 6; val cell = 180
+        val rows = listOf(0, 1, 2)
+        val states = listOf(
+            Triple(Pet.Action.IDLE, Pet.Stage.BABY, 0L), Triple(Pet.Action.RUN, Pet.Stage.YOUNG, 0L),
+            Triple(Pet.Action.WALK, Pet.Stage.ADULT, 0L), Triple(Pet.Action.IDLE, Pet.Stage.OLD, 0L),
+            Triple(Pet.Action.EAT, Pet.Stage.ADULT, 0L), Triple(Pet.Action.SLEEP, Pet.Stage.ADULT, 0L),
+            Triple(Pet.Action.SNIFF, Pet.Stage.ADULT, 16 * Pet.HOUR), Triple(Pet.Action.SULK, Pet.Stage.ADULT, 32 * Pet.HOUR),
+            Triple(Pet.Action.WEAK, Pet.Stage.ADULT, 50 * Pet.HOUR), Triple(Pet.Action.DEAD, Pet.Stage.ADULT, 80 * Pet.HOUR),
+            Triple(Pet.Action.PLAY, Pet.Stage.YOUNG, 0L), Triple(Pet.Action.WALK, Pet.Stage.OLD, 0L),
         )
-        val bmp = Bitmap.createBitmap(3 * 330, 3 * 270, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp); c.drawColor(Color.parseColor("#444444"))
-        cases.forEachIndexed { i, k ->
-            StickerArt.clockNow = { k.now }
-            val sz = 150f
-            val st = StickerElement(kind = "w:pet", label = k.name, look = Pet.Look(k.sp, k.col).encode(),
-                fedAt = k.fed, playedAt = k.played, streak = k.streak, streakDay = today,
-                x = 165f + (i % 3) * 330f, y = 140f + (i / 3) * 270f + sz * 0.35f, size = sz)
-            StickerArt.draw(c, st, 1700L, null, null)
+        val perRow = 12
+        val bmp = Bitmap.createBitmap(cols * cell, rows.size * (perRow / cols) * cell + 2 * cell, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); c.drawColor(Color.parseColor("#BFD7EA"))
+        for (sp in rows) states.forEachIndexed { i, (a, stg, hunger) ->
+            val x = (i % cols) * cell + cell / 2f
+            val y = (sp * 2 + i / cols) * cell + cell * 0.62f
+            val st = StickerElement(kind = "w:pet", label = listOf("Mochi", "Bruno", "Coco")[sp], look = Pet.Look(sp, listOf(0, 3, 1)[sp]).encode(), x = x, y = y, size = 120f)
+            StickerArt.drawPetPose(c, st, Pet.Pose(x, y, if (i % 2 == 0) -1f else 1f, a, stg, hunger, a == Pet.Action.WALK || a == Pet.Action.RUN || a == Pet.Action.PLAY), 1700L)
         }
+        // food bowl full / half / empty, and the pit
+        val fy = rows.size * 2 * cell + cell * 0.6f
+        val now = 1795943400000L
+        StickerArt.clockNow = { now }
+        for ((i, left) in listOf(0, 1, 2).withIndex()) {
+            val food = StickerElement(kind = "w:food", x = cell * (i + 0.5f), y = fy, size = 120f, timestamp = now - left * 100_000L)
+            StickerArt.draw(c, food, 1700L, null, null)
+        }
+        c.save(); c.translate(cell * 4.5f, fy); c.scale(1.4f, 1.4f); StickerArt.pit(c, 1700L, true); c.restore()
         FileOutputStream(File(out, "pets.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 }
