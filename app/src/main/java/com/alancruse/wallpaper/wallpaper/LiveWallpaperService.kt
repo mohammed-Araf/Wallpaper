@@ -21,6 +21,11 @@ class LiveWallpaperService : WallpaperService() {
 
     override fun onCreateEngine(): Engine = WallpaperEngine()
 
+    // The wallpaper service stays alive while it's the wallpaper — the cheapest
+    // place to keep the lock screen in sync, with no foreground notification.
+    override fun onCreate() { super.onCreate(); LockSync.acquire(this) }
+    override fun onDestroy() { LockSync.release(); super.onDestroy() }
+
     inner class WallpaperEngine : Engine() {
 
         private val handler = Handler(Looper.getMainLooper())
@@ -33,6 +38,18 @@ class LiveWallpaperService : WallpaperService() {
 
         private var bgColor = Color.BLACK
         private var currentListeningRoomId: String? = null
+        private var visible = false
+        private var dirty = true
+        private val drawNow = Runnable { if (visible) { dirty = false; drawFrame() } }
+        // Drop the network listener after a while off-screen; re-attach (from cache) when shown.
+        private val idleStop = Runnable { if (!visible) stopListening() }
+
+        /** Coalesce bursts of changes into one frame, and never draw while hidden. */
+        private fun requestDraw() {
+            dirty = true
+            if (!visible) return
+            handler.removeCallbacks(drawNow); handler.postDelayed(drawNow, 32)
+        }
 
         // Listen for wallpaper room changes from the app
         private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -45,8 +62,6 @@ class LiveWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             PairingPrefs(this@LiveWallpaperService).registerOnChangeListener(prefsListener)
             startListening()
-            // After the live wallpaper is applied, override lock screen if a separate one is set
-            triggerLockscreenOverride()
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
@@ -56,11 +71,14 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
+            this.visible = visible
             if (visible) {
+                handler.removeCallbacks(idleStop)
                 startListening()
-                drawFrame()
-                // Re-apply lock screen override each time wallpaper becomes visible
-                triggerLockscreenOverride()
+                if (dirty) { dirty = false; drawFrame() }
+            } else {
+                handler.removeCallbacks(drawNow)
+                handler.postDelayed(idleStop, 60_000)
             }
         }
 
@@ -70,24 +88,11 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             super.onDestroy()
+            handler.removeCallbacksAndMessages(null)
             stopListening()
             PairingPrefs(this@LiveWallpaperService).unregisterOnChangeListener(prefsListener)
         }
 
-        /**
-         * If the user has a separate lock screen canvas configured,
-         * start the LockscreenWallpaperService to override the lock screen
-         * with a static bitmap (using FLAG_LOCK).
-         * Delayed by 2s to let Android finish applying the live wallpaper.
-         */
-        private fun triggerLockscreenOverride() {
-            val prefs = PairingPrefs(this@LiveWallpaperService)
-            if (prefs.lockscreenRoomId != null) {
-                handler.postDelayed({
-                    LockscreenWallpaperService.start(this@LiveWallpaperService)
-                }, 2000L)
-            }
-        }
 
         private fun startListening() {
             val prefs = PairingPrefs(this@LiveWallpaperService)
@@ -112,24 +117,24 @@ class LiveWallpaperService : WallpaperService() {
 
             addListener(roomRef.child("strokes")) { snap ->
                 strokes = snap.children.mapNotNull { it.getValue(DrawingStroke::class.java) }
-                drawFrame()
+                requestDraw()
             }
             addListener(roomRef.child("stickers")) { snap ->
                 stickers = snap.children.mapNotNull { it.getValue(StickerElement::class.java) }
-                drawFrame()
+                requestDraw()
             }
             addListener(roomRef.child("texts")) { snap ->
                 texts = snap.children.mapNotNull { it.getValue(TextElement::class.java) }
-                drawFrame()
+                requestDraw()
             }
             addListener(roomRef.child("images")) { snap ->
                 images = snap.children.mapNotNull { it.getValue(ImageElement::class.java) }
-                drawFrame()
+                requestDraw()
             }
             addListener(roomRef.child("backgroundColor")) { snap ->
                 val colorArgb = snap.getValue(Int::class.java)
                 bgColor = colorArgb ?: Color.BLACK
-                drawFrame()
+                requestDraw()
             }
         }
 

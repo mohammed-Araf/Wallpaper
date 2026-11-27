@@ -41,13 +41,10 @@ import dev.chrisbanes.haze.haze
 fun SettingsScreen(
     currentUser: FirebaseUser,
     isPaired: Boolean,
-    hasLockscreen: Boolean,
     onPair: () -> Unit,
     onUnpair: () -> Unit,
     onSignOut: () -> Unit,
     onSchedule: () -> Unit,
-    onApplyWallpaper: () -> Unit,
-    onClearLockscreen: () -> Unit,
     onPermissions: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -114,6 +111,7 @@ fun SettingsScreen(
                 SectionLabel("Canvas")
                 GlassGroup(Modifier.enterAnim(2)) {
                     SettingRow(Icons.Rounded.Gesture, Tints.Blue, "Smooth strokes", trailing = { GlassSwitch(s.smoothStrokes) { s.smoothStrokes = it } })
+                    SettingRow(Icons.Rounded.Category, Tints.Pink, "Hold to perfect shapes", trailing = { GlassSwitch(s.shapeSnap) { s.shapeSnap = it } })
                     SettingRow(Icons.Rounded.Vibration, Tints.Orange, "Haptics", trailing = { GlassSwitch(s.haptics) { s.haptics = it } })
                     SettingRow(Icons.Rounded.StayCurrentPortrait, Tints.Green, "Keep screen on", trailing = { GlassSwitch(s.keepScreenOn) { s.keepScreenOn = it } })
                 }
@@ -130,9 +128,7 @@ fun SettingsScreen(
                 // Wallpaper
                 SectionLabel("Wallpaper")
                 GlassGroup(Modifier.enterAnim(4)) {
-                    SettingRow(Icons.Rounded.Wallpaper, Tints.Indigo, "Apply live wallpaper", onApplyWallpaper)
                     SettingRow(Icons.Rounded.Schedule, Tints.Teal, "Schedule", onSchedule)
-                    if (hasLockscreen) SettingRow(Icons.Rounded.ScreenLockPortrait, Tints.Gray, "Stop lock screen sync", onClearLockscreen)
                 }
 
                 // Partner

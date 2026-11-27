@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WallPaper" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/deep_navy</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/deep_navy</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <!-- System splash hands over seamlessly to the in-app intro -->
+        <item name="android:windowSplashScreenBackground">@color/deep_navy</item>
+        <item name="android:windowSplashScreenAnimationDuration">200</item>
+    </style>
+</resources>

@@ -66,6 +66,7 @@ import com.alancruse.wallpaper.ui.theme.*
 import com.alancruse.wallpaper.wallpaper.CanvasRenderer
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
+import com.alancruse.wallpaper.canvas.ShapeSnap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -341,8 +342,23 @@ fun LiveCanvasScreen(
                         var threeStart: Offset? = null
                         var threeTravel = Offset.Zero
 
+                        // Draw-and-hold shape cleanup
+                        var holdAnchor = down.position
+                        var holdSince = t0
+                        var snapped = false
+                        var snapTried = false
+
                         while (true) {
-                            val ev = awaitPointerEvent()
+                            val holdable = activeTool == Tool.PEN && canEdit && settings.shapeSnap && !snapped && !snapTried && maxPtr == 1 && livePoints.size > 3
+                            val ev = if (holdable) withTimeoutOrNull(90L) { awaitPointerEvent() } else awaitPointerEvent()
+                            if (ev == null) {
+                                if (android.os.SystemClock.uptimeMillis() - holdSince > 520) {
+                                    val clean = ShapeSnap.snap(livePoints)
+                                    if (clean != null) { livePoints.clear(); livePoints.addAll(clean); snapped = true; haptic(Haptic.Confirm); redraw++ }
+                                    else snapTried = true
+                                }
+                                continue
+                            }
                             tEnd = ev.changes.maxOf { it.uptimeMillis }
                             val pressed = ev.changes.filter { it.pressed }
                             if (pressed.isEmpty()) break
@@ -354,7 +370,8 @@ fun LiveCanvasScreen(
                                 travel += d.getDistance(); lastPos = ch.position
                                 val cp = toCanvas(ch.position)
                                 when (activeTool) {
-                                    Tool.PEN -> if (canEdit && livePoints.isNotEmpty()) {
+                                    Tool.PEN -> if (canEdit && livePoints.isNotEmpty() && !snapped) {
+                                        if ((ch.position - holdAnchor).getDistance() > 7f) { holdAnchor = ch.position; holdSince = ch.uptimeMillis; snapTried = false }
                                         val lp = livePoints.last()
                                         val dx = cp.x - lp.x; val dy = cp.y - lp.y
                                         if (dx * dx + dy * dy > (1.5f / viewScale).let { it * it }) { livePoints.add(cp.toPoint()); redraw++ }
