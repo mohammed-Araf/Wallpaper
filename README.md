@@ -1,46 +1,57 @@
-## 🎨 WallPaper: Shared Live Lockscreen
+## WallPaper — Shared Live Wallpaper
 
-WallPaper is an interactive Android application that allows partners, friends, or family members to draw, sketch, and edit a shared live wallpaper together in real-time. What you draw on your canvas instantly updates on your partner's lockscreen.
+Draw together on a canvas that becomes your partner's / group's live wallpaper and lock screen in real time.
 
-### ✨ Key Features
+### Highlights
 
-*   **Real-Time Sync**: Powered by Firebase Realtime Database for instantaneous updates across devices.
-*   **Interactive Canvas**: A fully featured sketching tool built with Jetpack Compose.
-    *   **Sketch Mode**: Draw with 7 vibrant colors and multiple brush sizes.
-    *   **Eraser Mode**: Precisely remove parts of your strokes with varying eraser sizes.
-    *   **Create Mode**: Add text, place emojis/stickers, and upload images to the canvas.
-    *   **Transform Mode**: Move, scale, and rotate any sticker, text, or image with intuitive multi-touch gestures.
-*   **Live Wallpaper Engine**: A custom Android `WallpaperService` renders the shared canvas efficiently as your system wallpaper.
-*   **Chronological Layering**: Elements stack naturally based on when they were created, making collaborative editing seamless.
-*   **Modern Aesthetics**: 
-    *   OLED-optimized true-dark backgrounds (`#08080F`).
-    *   Edge-to-edge immersive UI.
-    *   Fluid, spring-based animations and micro-interactions.
-    *   Tactile haptic feedback on tool selections and actions.
-*   **Secure Pairing**: Generate a 6-digit code to securely link your device with a partner.
+- **Liquid-glass UI** — floating translucent panels with live backdrop blur (Android 12+, via [Haze](https://github.com/chrisbanes/haze)), specular edges and soft ambient color fields. Older Android versions fall back to frosted translucent panels.
+- **Four themes** — Auto · Light · Dark · **OLED** (true `#000000`, no ambient glow — pixels stay off). Seven accent colors. All apply instantly across the app and editor.
+- **Canvas thumbnails** on the home screen, refreshed every time you leave a canvas.
+- **Instant canvas switching** — switch rooms from the pill at the top of the editor without leaving it. Firebase disk persistence means previously opened canvases render immediately, even offline.
+- **Group roles** — owners can switch members to view-only; view-only members get a read-only editor.
 
-### 🛠️ Tech Stack
+### Gestures
 
-*   **Language**: Kotlin
-*   **UI Toolkit**: Jetpack Compose (`Material 3`, `Compose Animation Core`)
-*   **Backend / Realtime Database**: Firebase Realtime Database & Firebase Auth (Anonymous Login)
-*   **Storage**: Firebase Cloud Storage (for images)
-*   **System Integration**: Android `WallpaperService`
+| Fingers | Gesture | Action |
+|---|---|---|
+| 1 | Drag | Draw / erase / move the tool's target |
+| 1 | Tap | Dot (pen) · place text (text tool) · erase a whole stroke (stroke eraser) |
+| 1 | Tap a text (move tool) | Edit the text |
+| 1 | Drag an item to the bottom | Delete (bin appears) |
+| 1 | Drag empty space while zoomed | Pan the view |
+| 2 | Pinch / twist on an item | Scale + rotate the item |
+| 2 | Pinch on empty space | Zoom / pan the view (outline shows the real wallpaper area) |
+| 2 | Tap | **Undo** |
+| 3 | Tap | **Redo** |
+| 3 | Swipe down / up | Hide / show all tools (focus mode) |
 
-### 🚀 Getting Started
+A stroke is cancelled automatically if a second finger lands mid-stroke, so zooming never leaves stray marks. Every gesture can be turned off in **Settings → Gestures**. Tap the `%` chip to reset zoom.
 
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/mohammed-Araf/Wallpaper.git
-    ```
-2.  Open the project in **Android Studio**.
-3.  Ensure you have your own `google-services.json` file placed in the `app/` directory (you will need to create a Firebase project and add Android support).
-4.  Build and run the project on an Android device or emulator running API 26 or higher.
+### Editor tools (bottom dock)
 
-### 📱 How to Use
+Move · Pen · Eraser · Text · Stickers · Image. Tap the active tool again to open its tray (colors, size, opacity; eraser mode and size). Stickers: tap to drop in the middle, or long-press and drag onto the canvas. **⋯** (top right) holds background colors, set as Home / Lock, fit to screen and clear.
 
-1.  **Pair**: Launch the app and share your 6-digit pairing code with your partner, or enter their code.
-2.  **Edit**: Tap "Open Canvas" from the Home Screen.
-3.  **Create**: Use the tools at the bottom to draw, add stickers, type text, or upload photos.
-4.  **Transform**: Tap any item you created to move, pinch-to-zoom, or rotate it with two fingers.
-5.  **Set Wallpaper**: Return to the Home Screen and tap "Set as Wallpaper" to apply the canvas to your device's lockscreen and home screen.
+### Home
+
+Tap a canvas to open it, long-press for Home / Lock / Invite / Members / Leave. The dock has **+** (partner or group), schedule, **Live** (apply the live wallpaper) and settings.
+
+### Settings
+
+Appearance (theme, accent, glass blur, ambient motion) · Canvas (smooth strokes, haptics, keep screen on) · Gestures · Wallpaper (apply, schedule, stop lock-screen sync) · Partner · System (permissions, clear previews, privacy, terms).
+
+### Performance notes
+
+- All element types sync with incremental child listeners; edits apply locally first, so drawing, erasing and undo never wait on the network.
+- The eraser and undo work on in-memory data (previously each eraser movement downloaded every stroke).
+- Stroke paths are pre-built once; images are decoded off the main thread into an LRU cache and drawn without per-frame copies.
+- Transform updates are throttled to ~8 writes/s and own echoes are ignored.
+
+### Tech
+
+Kotlin · Jetpack Compose (BOM 2025.01) · Material 3 · Haze · Firebase Auth / Realtime Database (with disk persistence) / Messaging · `WallpaperService` + `WallpaperManager.FLAG_LOCK`.
+
+### Getting started
+
+1. Open in Android Studio.
+2. Put your own `google-services.json` in `app/`.
+3. Run on Android 8.0+ (API 26). Live blur needs Android 12+.

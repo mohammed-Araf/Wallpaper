@@ -53,7 +53,7 @@ class LockscreenWallpaperService : Service() {
     private var stickers = listOf<StickerElement>()
     private var texts = listOf<TextElement>()
     private var images = listOf<ImageElement>()
-    private var bgColor = Color.parseColor("#0D0D1A")
+    private var bgColor = Color.BLACK
 
     private var screenWidth = 1080
     private var screenHeight = 2400
@@ -135,7 +135,7 @@ class LockscreenWallpaperService : Service() {
         }
         addListener(roomRef.child("backgroundColor")) { snap ->
             val colorArgb = snap.getValue(Int::class.java)
-            bgColor = colorArgb ?: Color.parseColor("#0D0D1A")
+            bgColor = colorArgb ?: Color.BLACK
             scheduleRender()
         }
 

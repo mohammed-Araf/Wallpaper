@@ -1,476 +1,258 @@
 package com.alancruse.wallpaper.ui
 
-import android.view.HapticFeedbackConstants
-import androidx.compose.animation.*
+import android.content.Intent
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
 import androidx.compose.material.icons.automirrored.rounded.Logout
-import androidx.compose.material3.*
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.alancruse.wallpaper.pairing.GroupManager
-import com.alancruse.wallpaper.pairing.PairingPrefs
+import com.alancruse.wallpaper.ui.components.*
 import com.alancruse.wallpaper.ui.theme.*
-import kotlinx.coroutines.delay
-
-data class CanvasRoom(
-    val roomId: String,
-    val roomType: String,      // "couple" or "group"
-    val displayName: String,
-    val subtitle: String,
-    val emoji: String,
-    val groupId: String? = null // null for couple
-)
+import com.alancruse.wallpaper.wallpaper.CanvasRenderer
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.haze
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
-    currentUid: String,
-    partnerUid: String?,
-    groups: List<GroupManager.GroupInfo>,
-    activeWallpaperRoomId: String?,
-    lockscreenRoomId: String?,
-    onOpenCanvas: (roomId: String, roomType: String) -> Unit,
-    onSetWallpaper: (roomId: String, roomType: String) -> Unit,
-    onSetLockscreen: (roomId: String, roomType: String) -> Unit,
-    onActivateWallpaper: () -> Unit,
-    onManageGroups: () -> Unit,
-    onManageGroup: (groupId: String) -> Unit,
-    onLeaveGroup: (groupId: String) -> Unit,
-    onAutoSwitch: () -> Unit,
-    onOpenSettings: () -> Unit
+    rooms: List<CanvasRoom>,
+    isPaired: Boolean,
+    homeRoomId: String?,
+    lockRoomId: String?,
+    thumbVersion: Int,
+    onOpenCanvas: (CanvasRoom) -> Unit,
+    onSetHome: (CanvasRoom) -> Unit,
+    onSetLock: (CanvasRoom) -> Unit,
+    onManageGroup: (String) -> Unit,
+    onLeaveGroup: (String) -> Unit,
+    onGroups: () -> Unit,
+    onPair: () -> Unit,
+    onApplyWallpaper: () -> Unit,
+    onSchedule: () -> Unit,
+    onSettings: () -> Unit,
 ) {
-    val view = LocalView.current
+    val c = LocalWallpaperColors.current
+    val context = LocalContext.current
+    val haze = remember { HazeState() }
+    var actionsFor by remember { mutableStateOf<CanvasRoom?>(null) }
+    var showAdd by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf<CanvasRoom?>(null) }
 
-    // Dialog states
-    var leaveGroupId by remember { mutableStateOf<String?>(null) }
-    var leaveGroupName by remember { mutableStateOf("") }
-
-    // Staggered entrance
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { delay(60); visible = true }
-
-    val headerScale by animateFloatAsState(
-        targetValue = if (visible) 1f else 0.6f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f), label = "headerScale"
-    )
-    val headerAlpha by animateFloatAsState(
-        targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(400), label = "headerAlpha"
-    )
-
-    // Ambient glow
-    val infiniteTransition = rememberInfiniteTransition(label = "home")
-    val orbFloat by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "orbFloat"
-    )
-    val statusPulse by infiniteTransition.animateFloat(
-        initialValue = 0.7f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "statusPulse"
-    )
-
-    // Build room list
-    val rooms = remember(partnerUid, groups) {
-        buildList {
-            if (!partnerUid.isNullOrEmpty()) {
-                val coupleRoomId = if (currentUid < partnerUid) "${currentUid}_${partnerUid}"
-                else "${partnerUid}_${currentUid}"
-                add(CanvasRoom(coupleRoomId, "couple", "Partner Canvas", "Draw on each other's wallpaper", "❤️"))
-            }
-            groups.forEach { g ->
-                add(CanvasRoom(g.roomId, "group", g.name, "${g.memberCount} members · ${g.joinCode}", "👥", g.groupId))
-            }
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(DeepNavy)) {
-        // Floating orbs
-        Box(
-            modifier = Modifier
-                .offset(x = (-30).dp, y = (-60 + orbFloat).dp)
-                .size(200.dp).blur(100.dp)
-                .background(ElectricViolet.copy(alpha = 0.1f), CircleShape)
-        )
-        Box(
-            modifier = Modifier
-                .offset(x = 140.dp, y = (480 - orbFloat).dp)
-                .size(180.dp).blur(90.dp)
-                .background(CyanAccent.copy(alpha = 0.08f), CircleShape)
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp)
-                .padding(top = 56.dp, bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // ── Header ──
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .alpha(headerAlpha),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().haze(haze)) {
+            AmbientBackground()
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(160.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 140.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Spacer(modifier = Modifier.width(40.dp)) // balance spacer
-
-                Box(
-                    modifier = Modifier
-                        .scale(headerScale)
-                        .size(48.dp)
-                        .background(SuccessGreen.copy(alpha = 0.1f), CircleShape)
-                        .border(1.5.dp, SuccessGreen.copy(alpha = statusPulse * 0.4f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Rounded.FavoriteBorder, "Connected",
-                        tint = SuccessGreen.copy(alpha = statusPulse),
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                        onOpenSettings()
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        Icons.Rounded.Settings,
-                        contentDescription = "Settings",
-                        tint = TextPrimary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-            Text("Your Canvases", fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                color = TextPrimary, letterSpacing = (-0.5).sp, modifier = Modifier.alpha(headerAlpha))
-            Spacer(modifier = Modifier.height(3.dp))
-            Text(
-                "${rooms.size} canvas${if (rooms.size != 1) "es" else ""} · tap ★ to set as wallpaper",
-                fontSize = 12.sp, color = TextMuted, modifier = Modifier.alpha(headerAlpha)
-            )
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // ── Canvas list ──
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(rooms, key = { it.roomId }) { room ->
-                    val isHomeActive = room.roomId == activeWallpaperRoomId
-                    val isLockActive = room.roomId == lockscreenRoomId
-                    CanvasCard(
-                        room = room,
-                        isHomeWallpaper = isHomeActive,
-                        isLockWallpaper = isLockActive,
-                        onOpen = {
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            onOpenCanvas(room.roomId, room.roomType)
-                        },
-                        onSetHomeWallpaper = {
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            onSetWallpaper(room.roomId, room.roomType)
-                        },
-                        onSetLockWallpaper = {
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            onSetLockscreen(room.roomId, room.roomType)
-                        },
-                        onLeave = if (room.roomType == "group" && room.groupId != null) {
-                            {
-                                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                leaveGroupName = room.displayName
-                                leaveGroupId = room.groupId
-                            }
-                        } else null,
-                        onManage = if (room.roomType == "group" && room.groupId != null) {
-                            {
-                                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                onManageGroup(room.groupId)
-                            }
-                        } else null
-                    )
-                }
-
-                // Empty state
-                if (rooms.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(100.dp)
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(CardSurface)
-                                .border(1.dp, GlassBorder, RoundedCornerShape(20.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("No canvases yet.\nPair with a partner or create a group!",
-                                fontSize = 13.sp, color = TextMuted, textAlign = TextAlign.Center)
-                        }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(Modifier.statusBarsPadding().padding(top = 20.dp, bottom = 6.dp, start = 4.dp), verticalAlignment = Alignment.Bottom) {
+                        Text("Canvases", color = c.textPrimary, fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.8).sp)
                     }
                 }
+                if (rooms.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState(isPaired, onPair, onGroups) }
+                items(rooms, key = { it.roomId }) { room ->
+                    CanvasTile(
+                        room = room,
+                        isHome = room.roomId == homeRoomId,
+                        isLock = room.roomId == lockRoomId,
+                        thumbVersion = thumbVersion,
+                        onClick = { onOpenCanvas(room) },
+                        onLongClick = { actionsFor = room },
+                    )
+                }
             }
+        }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ── Action buttons ──
+        CompositionLocalProvider(LocalHazeState provides haze) {
+            // Floating dock
             Row(
-                modifier = Modifier.fillMaxWidth().alpha(headerAlpha),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 18.dp)
+                    .glass(CircleShape, strong = true).padding(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Groups (Create or Join)
-                SmallActionButton(
-                    icon = Icons.Rounded.GroupAdd,
-                    label = "Groups",
-                    color = ElectricViolet,
-                    modifier = Modifier.weight(1f),
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onManageGroups() }
-                )
-                // Auto-Switch
-                SmallActionButton(
-                    icon = Icons.Rounded.Schedule,
-                    label = "Schedule",
-                    color = TealGlow,
-                    modifier = Modifier.weight(1f),
-                    onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM); onAutoSwitch() }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Set Wallpaper button
-            Button(
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                    onActivateWallpaper()
-                },
-                modifier = Modifier.fillMaxWidth().height(42.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                contentPadding = PaddingValues(0.dp)
-            ) {
+                BareIconButton(Icons.Rounded.Add, { showAdd = true }, size = 52.dp, contentDescription = "Add")
+                BareIconButton(Icons.Rounded.Schedule, onSchedule, size = 52.dp, contentDescription = "Schedule")
                 Box(
-                    modifier = Modifier.fillMaxSize()
-                        .background(Brush.horizontalGradient(listOf(CyanAccent, TealGlow)), RoundedCornerShape(14.dp)),
+                    Modifier.height(52.dp).clip(CircleShape).background(c.accent)
+                        .combinedClickableNoRipple(onApplyWallpaper)
+                        .padding(horizontal = 22.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Wallpaper, null, tint = DeepNavy, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Set as Live Wallpaper", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = DeepNavy)
+                        Icon(Icons.Rounded.Wallpaper, "Apply wallpaper", tint = c.onAccent, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Live", color = c.onAccent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                     }
+                }
+                BareIconButton(Icons.Rounded.Settings, onSettings, size = 52.dp, contentDescription = "Settings")
+            }
+
+            // Canvas actions
+            GlassSheet(actionsFor != null, { actionsFor = null }) {
+                val r = actionsFor
+                if (r != null) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (r.roomType == "group") Icons.Rounded.Group else Icons.Rounded.Favorite, null, tint = c.accent)
+                        Spacer(Modifier.width(10.dp))
+                        Text(r.displayName, color = c.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (r.joinCode != null) Text(r.joinCode, color = c.textMuted, fontSize = 14.sp, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SheetAction(Icons.Rounded.Brush, "Open", { actionsFor = null; onOpenCanvas(r) }, Modifier.weight(1f))
+                        SheetAction(Icons.Rounded.Home, "Home", { actionsFor = null; onSetHome(r) }, Modifier.weight(1f), active = r.roomId == homeRoomId)
+                        SheetAction(Icons.Rounded.Lock, "Lock", { actionsFor = null; onSetLock(r) }, Modifier.weight(1f), active = r.roomId == lockRoomId)
+                    }
+                    if (r.groupId != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                            SheetAction(Icons.Rounded.IosShare, "Invite", {
+                                actionsFor = null
+                                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, r.joinCode ?: "")
+                                }, null))
+                            }, Modifier.weight(1f))
+                            SheetAction(Icons.Rounded.Group, "Members", { actionsFor = null; onManageGroup(r.groupId) }, Modifier.weight(1f))
+                            SheetAction(Icons.AutoMirrored.Rounded.Logout, "Leave", { actionsFor = null; leaving = r }, Modifier.weight(1f), color = ErrorRed)
+                        }
+                    } else Spacer(Modifier.height(8.dp))
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Timed confirm: Leave Group
-            leaveGroupId?.let { gid ->
-                TimedConfirmDialog(
-                    title = "Leave \"$leaveGroupName\"?",
-                    message = "You'll lose access to this group's canvas. If you're the last member, the group and all its canvas data will be deleted permanently.",
-                    confirmLabel = "Leave Group",
-                    accentColor = WarmRose,
-                    waitSeconds = 5,
-                    onConfirm = { leaveGroupId = null; onLeaveGroup(gid) },
-                    onDismiss = { leaveGroupId = null }
-                )
+            GlassSheet(showAdd, { showAdd = false }) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                    if (!isPaired) SheetAction(Icons.Rounded.Favorite, "Partner", { showAdd = false; onPair() }, Modifier.weight(1f))
+                    SheetAction(Icons.Rounded.GroupAdd, "Group", { showAdd = false; onGroups() }, Modifier.weight(1f))
+                }
             }
+        }
+
+        leaving?.let { r ->
+            TimedConfirmDialog(
+                title = "Leave ${r.displayName}?",
+                message = "",
+                confirmLabel = "Leave",
+                waitSeconds = 3,
+                onConfirm = { leaving = null; r.groupId?.let(onLeaveGroup) },
+                onDismiss = { leaving = null }
+            )
         }
     }
 }
 
-// ── Canvas Card ──
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CanvasCard(
-    room: CanvasRoom,
-    isHomeWallpaper: Boolean,
-    isLockWallpaper: Boolean,
-    onOpen: () -> Unit,
-    onSetHomeWallpaper: () -> Unit,
-    onSetLockWallpaper: () -> Unit,
-    onLeave: (() -> Unit)?,
-    onManage: (() -> Unit)? = null
+private fun Modifier.combinedClickableNoRipple(onClick: () -> Unit): Modifier {
+    val haptic = rememberHaptics()
+    val src = remember { MutableInteractionSource() }
+    return this.pressScale(src, 0.95f).combinedClickable(src, null) { haptic(Haptic.Confirm); onClick() }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CanvasTile(
+    room: CanvasRoom, isHome: Boolean, isLock: Boolean, thumbVersion: Int,
+    onClick: () -> Unit, onLongClick: () -> Unit,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.97f else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f), label = "pressScale"
-    )
-
-    var showWallpaperMenu by remember { mutableStateOf(false) }
-
-    val isActive = isHomeWallpaper || isLockWallpaper
-    val activeGlow = if (isActive) ElectricViolet.copy(alpha = 0.3f) else GlassBorder
-
+    val c = LocalWallpaperColors.current
+    val context = LocalContext.current
+    val haptic = rememberHaptics()
+    val src = remember { MutableInteractionSource() }
+    var thumb by remember(room.roomId) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(room.roomId, thumbVersion) {
+        thumb = withContext(Dispatchers.IO) {
+            val f = CanvasRenderer.thumbFile(context, room.roomId)
+            if (f.exists()) BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() else null
+        } ?: thumb
+    }
+    val shape = RoundedCornerShape(30.dp)
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
-            .clip(RoundedCornerShape(18.dp))
-            .background(CardSurface)
-            .border(1.dp, activeGlow, RoundedCornerShape(18.dp))
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onOpen)
-            .padding(16.dp)
+        Modifier.fillMaxWidth().aspectRatio(0.62f).pressScale(src, 0.96f)
+            .glass(shape)
+            .combinedClickable(src, null, onLongClick = { haptic(Haptic.Confirm); onLongClick() }) { haptic(Haptic.Tick); onClick() }
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // Emoji badge
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(if (isActive) ElectricViolet.copy(alpha = 0.15f) else ElevatedSurface),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(room.emoji, fontSize = 20.sp)
-            }
+        val t = thumb
+        if (t != null) Image(t, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().padding(5.dp).clip(RoundedCornerShape(26.dp)))
+        else Box(
+            Modifier.fillMaxSize().padding(5.dp).clip(RoundedCornerShape(26.dp))
+                .background(Brush.linearGradient(listOf(c.accent.copy(alpha = 0.35f), c.accent.copy(alpha = 0.05f)))),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(if (room.roomType == "group") Icons.Rounded.Group else Icons.Rounded.Favorite, null, tint = c.textPrimary.copy(alpha = 0.6f), modifier = Modifier.size(44.dp))
+        }
 
-            Spacer(modifier = Modifier.width(14.dp))
+        Row(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (isHome) Badge(Icons.Rounded.Home)
+            if (isLock) Badge(Icons.Rounded.Lock)
+        }
 
-            // Info
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    room.displayName, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    room.subtitle, fontSize = 11.sp, color = TextMuted,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-                if (isHomeWallpaper || isLockWallpaper) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    val labels = buildList {
-                        if (isHomeWallpaper) add("🏠 Home")
-                        if (isLockWallpaper) add("🔒 Lock")
-                    }.joinToString(" · ")
-                    Text(labels, fontSize = 10.sp, color = ElectricViolet, fontWeight = FontWeight.Medium)
-                }
-            }
-
-            // Actions
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box {
-                    IconButton(
-                        onClick = { showWallpaperMenu = true },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            if (isActive) Icons.Rounded.Star else Icons.Rounded.StarOutline,
-                            "Set Wallpaper",
-                            tint = if (isActive) ElectricViolet else TextMuted,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = showWallpaperMenu,
-                        onDismissRequest = { showWallpaperMenu = false },
-                        modifier = Modifier.background(CardSurface)
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(if (isHomeWallpaper) "✅" else "🏠", fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Home Screen", fontSize = 13.sp, color = TextPrimary)
-                                }
-                            },
-                            onClick = { showWallpaperMenu = false; onSetHomeWallpaper() }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(if (isLockWallpaper) "✅" else "🔒", fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Lock Screen", fontSize = 13.sp, color = TextPrimary)
-                                }
-                            },
-                            onClick = { showWallpaperMenu = false; onSetLockWallpaper() }
-                        )
-                    }
-                }
-                // Leave group
-                if (onLeave != null) {
-                    IconButton(
-                        onClick = onLeave,
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(Icons.Rounded.Close, "Leave", tint = WarmRose.copy(alpha = 0.5f), modifier = Modifier.size(12.dp))
-                    }
-                }
-                // Manage group
-                if (onManage != null) {
-                    IconButton(
-                        onClick = onManage,
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(Icons.Rounded.Settings, "Manage", tint = TextMuted, modifier = Modifier.size(12.dp))
-                    }
-                }
-            }
+        Row(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(10.dp)
+                .clip(RoundedCornerShape(20.dp)).background(Color.Black.copy(alpha = 0.35f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(if (room.roomType == "group") Icons.Rounded.Group else Icons.Rounded.Favorite, null, tint = Color.White, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(room.displayName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (room.roomType == "group") Text("${room.memberCount}", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
 
-// ── Small Action Button ──
+@Composable
+private fun Badge(icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    val c = LocalWallpaperColors.current
+    Box(Modifier.size(28.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = c.onAccent, modifier = Modifier.size(15.dp))
+    }
+}
 
 @Composable
-private fun SmallActionButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    color: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.height(38.dp),
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.3f)),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = color),
-        contentPadding = PaddingValues(horizontal = 8.dp)
-    ) {
-        Icon(icon, null, modifier = Modifier.size(14.dp))
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+private fun EmptyState(isPaired: Boolean, onPair: () -> Unit, onGroups: () -> Unit) {
+    val c = LocalWallpaperColors.current
+    Column(Modifier.fillMaxWidth().padding(top = 60.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(96.dp).glass(RoundedCornerShape(32.dp)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.Draw, null, tint = c.accent, modifier = Modifier.size(44.dp))
+        }
+        Spacer(Modifier.height(28.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!isPaired) AccentButton(onPair, icon = Icons.Rounded.Favorite, text = "Partner")
+            AccentButton(onGroups, icon = Icons.Rounded.GroupAdd, text = "Group", color = if (isPaired) null else Tints.Indigo)
+        }
     }
 }

@@ -31,7 +31,7 @@ class LiveWallpaperService : WallpaperService() {
         private var texts = listOf<TextElement>()
         private var images = listOf<ImageElement>()
 
-        private var bgColor = Color.parseColor("#0D0D1A")
+        private var bgColor = Color.BLACK
         private var currentListeningRoomId: String? = null
 
         // Listen for wallpaper room changes from the app
@@ -128,7 +128,7 @@ class LiveWallpaperService : WallpaperService() {
             }
             addListener(roomRef.child("backgroundColor")) { snap ->
                 val colorArgb = snap.getValue(Int::class.java)
-                bgColor = colorArgb ?: Color.parseColor("#0D0D1A")
+                bgColor = colorArgb ?: Color.BLACK
                 drawFrame()
             }
         }

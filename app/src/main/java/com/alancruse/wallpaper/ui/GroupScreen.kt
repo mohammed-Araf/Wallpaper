@@ -1,41 +1,33 @@
 package com.alancruse.wallpaper.ui
 
-import android.view.HapticFeedbackConstants
+import android.content.Intent
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Group
-import androidx.compose.material.icons.rounded.GroupAdd
-import androidx.compose.material.icons.rounded.Link
-import androidx.compose.material3.*
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.alancruse.wallpaper.pairing.GroupManager
+import com.alancruse.wallpaper.ui.components.*
 import com.alancruse.wallpaper.ui.theme.*
-import kotlinx.coroutines.delay
 
 @Composable
 fun GroupScreen(
@@ -45,379 +37,102 @@ fun GroupScreen(
     onGroupJoined: (groupId: String, roomId: String) -> Unit,
     onBack: () -> Unit
 ) {
-    val view = LocalView.current
-    val clipboardManager = LocalClipboardManager.current
-    val groupManager = remember { GroupManager(currentUid) }
+    val c = LocalWallpaperColors.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptic = rememberHaptics()
+    val gm = remember { GroupManager(currentUid) }
+    var name by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var created by remember { mutableStateOf<Pair<String, String>?>(null) } // groupId, code
 
-    var groupName by remember { mutableStateOf("") }
-    var joinCode by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("") }
-    var isError by remember { mutableStateOf(false) }
-    var isLoading by remember { mutableStateOf(false) }
-    var createdCode by remember { mutableStateOf<String?>(null) }
-    var createdGroupId by remember { mutableStateOf<String?>(null) }
-
-    // Staggered entrance
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { delay(80); visible = true }
-
-    val headerAlpha by animateFloatAsState(
-        targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(500, easing = FastOutSlowInEasing), label = "headerAlpha"
-    )
-    val card1Offset by animateFloatAsState(
-        targetValue = if (visible) 0f else 50f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 200f), label = "card1"
-    )
-    val card2Offset by animateFloatAsState(
-        targetValue = if (visible) 0f else 50f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 150f), label = "card2"
-    )
-
-    val infiniteTransition = rememberInfiniteTransition(label = "grp")
-    val orbFloat by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 12f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "orbFloat"
-    )
-
-    Box(modifier = Modifier.fillMaxSize().background(DeepNavy)) {
-        // Ambient orbs
-        Box(
-            modifier = Modifier
-                .offset(x = (-40).dp, y = (-50 + orbFloat).dp)
-                .size(180.dp).blur(90.dp)
-                .background(ElectricViolet.copy(alpha = 0.1f), CircleShape)
-        )
-        Box(
-            modifier = Modifier
-                .offset(x = 150.dp, y = (400 - orbFloat).dp)
-                .size(160.dp).blur(80.dp)
-                .background(CyanAccent.copy(alpha = 0.08f), CircleShape)
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp)
-                .padding(top = 56.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Back button + Header
-            Row(
-                modifier = Modifier.fillMaxWidth().alpha(headerAlpha),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                    onBack()
-                }) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = TextMuted)
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Groups",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary,
-                    letterSpacing = (-0.5).sp
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Create or join a shared canvas group",
-                fontSize = 13.sp, color = TextMuted,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.alpha(headerAlpha)
-            )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            // ── Card 1: Create Group ──
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer { translationY = card1Offset; alpha = if (visible) 1f else 0f }
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(CardSurface)
-                    .border(1.dp, GlassBorder, RoundedCornerShape(20.dp))
-                    .padding(20.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.GroupAdd, null, tint = ElectricViolet, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Create a Group", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    if (createdCode == null) {
-                        OutlinedTextField(
-                            value = groupName,
-                            onValueChange = { if (it.length <= 20) groupName = it },
-                            label = { Text("Group Name", color = TextMuted, fontSize = 12.sp) },
-                            singleLine = true,
+    Box(Modifier.fillMaxSize()) {
+        AmbientBackground()
+        Column(Modifier.fillMaxSize().imePadding()) {
+            GlassTopBar("Groups", onBack)
+            Column(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                AnimatedContent(created, label = "create") { cr ->
+                    if (cr == null) {
+                        GlassTextField(
+                            name, { if (it.length <= 20) name = it }, "New group",
+                            leadingIcon = Icons.Rounded.GroupAdd,
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = ElectricViolet,
-                                unfocusedBorderColor = GlassBorder,
-                                cursorColor = CyanAccent,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
-                            )
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                if (groupName.isNotBlank()) {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    isLoading = true
-                                    groupManager.createGroup(groupName.trim(), displayName) { success, gid, code, err ->
-                                        isLoading = false
-                                        if (success && gid != null && code != null) {
-                                            createdCode = code
-                                            createdGroupId = gid
-                                            statusMessage = "Group created!"
-                                            isError = false
-                                        } else {
-                                            statusMessage = err ?: "Failed to create group"
-                                            isError = true
-                                            view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                                        }
+                            trailing = {
+                                SendButton(enabled = name.isNotBlank() && !busy, busy = busy) {
+                                    busy = true; error = null
+                                    gm.createGroup(name.trim(), displayName) { ok, gid, jc, err ->
+                                        busy = false
+                                        if (ok && gid != null && jc != null) { created = gid to jc; haptic(Haptic.Confirm) }
+                                        else { error = err ?: "Failed"; haptic(Haptic.Reject) }
                                     }
                                 }
-                            },
-                            enabled = groupName.isNotBlank() && !isLoading,
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize()
-                                    .background(
-                                        if (groupName.isNotBlank() && !isLoading)
-                                            Brush.horizontalGradient(listOf(ElectricViolet, VividPurple))
-                                        else Brush.horizontalGradient(listOf(ElevatedSurface, ElevatedSurface)),
-                                        RoundedCornerShape(14.dp)
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isLoading) {
-                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                                } else {
-                                    Text("Create Group", fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                                        color = if (groupName.isNotBlank()) Color.White else TextMuted)
-                                }
                             }
-                        }
+                        )
                     } else {
-                        // Show created join code
-                        Text("Share this code with your group:", fontSize = 13.sp, color = TextMuted)
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            Modifier.fillMaxWidth().glass(RoundedCornerShape(28.dp)).padding(18.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            createdCode!!.forEach { ch ->
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(max = 52.dp)
-                                        .aspectRatio(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(ElevatedSurface)
-                                        .border(1.dp, ElectricViolet.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(ch.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    clipboardManager.setText(AnnotatedString(createdCode!!))
-                                    statusMessage = "Code copied!"
-                                    isError = false
-                                },
-                                modifier = Modifier.weight(1f).height(40.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
-                            ) {
-                                Icon(Icons.Rounded.ContentCopy, null, modifier = Modifier.size(14.dp), tint = TextMuted)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Copy", fontSize = 12.sp, color = TextMuted)
-                            }
-
-                            Button(
-                                onClick = {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    val gid = createdGroupId ?: return@Button
-                                    onGroupCreated(gid, "group_$gid")
-                                },
-                                modifier = Modifier.weight(1f).height(40.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize()
-                                        .background(Brush.horizontalGradient(listOf(ElectricViolet, VividPurple)), RoundedCornerShape(12.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("Open Canvas", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                                }
+                            CodeChips(cr.second)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                GlassIconButton(Icons.Rounded.ContentCopy, { clipboard.setText(AnnotatedString(cr.second)) }, contentDescription = "Copy")
+                                GlassIconButton(Icons.Rounded.IosShare, {
+                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, cr.second) }, null))
+                                }, contentDescription = "Share")
+                                AccentButton({ onGroupCreated(cr.first, "group_${cr.first}") }, icon = Icons.Rounded.Brush, height = 46.dp)
                             }
                         }
                     }
                 }
+
+                GlassTextField(
+                    code, { if (it.length <= 6) code = it.uppercase().filter { ch -> ch.isLetterOrDigit() } }, "Join code",
+                    leadingIcon = Icons.Rounded.Key,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                    textStyle = TextStyle(fontSize = 20.sp, letterSpacing = 6.sp, fontWeight = FontWeight.SemiBold),
+                    trailing = {
+                        SendButton(enabled = code.length == 6 && !busy, busy = false) {
+                            busy = true; error = null
+                            gm.joinGroup(code, displayName) { ok, gid, _, err ->
+                                busy = false
+                                if (ok && gid != null) { haptic(Haptic.Confirm); onGroupJoined(gid, "group_$gid") }
+                                else { error = err ?: "Failed"; haptic(Haptic.Reject) }
+                            }
+                        }
+                    }
+                )
+
+                AnimatedVisibility(error != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp)) {
+                        Icon(Icons.Rounded.ErrorOutline, null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(error ?: "", color = ErrorRed, fontSize = 14.sp)
+                    }
+                }
             }
+        }
+    }
+}
 
-            Spacer(modifier = Modifier.height(20.dp))
+@Composable
+internal fun SendButton(enabled: Boolean, busy: Boolean, onClick: () -> Unit) {
+    val c = LocalWallpaperColors.current
+    if (busy) Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), color = c.accent, strokeWidth = 2.dp) }
+    else BareIconButton(Icons.AutoMirrored.Rounded.ArrowForward, onClick, size = 46.dp, active = enabled, enabled = enabled)
+}
 
-            // Divider
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().alpha(headerAlpha)) {
-                HorizontalDivider(modifier = Modifier.weight(1f), color = GlassBorder)
-                Text("  OR  ", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                HorizontalDivider(modifier = Modifier.weight(1f), color = GlassBorder)
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // ── Card 2: Join Group ──
+@Composable
+internal fun CodeChips(code: String, small: Boolean = false) {
+    val c = LocalWallpaperColors.current
+    Row(horizontalArrangement = Arrangement.spacedBy(if (small) 4.dp else 8.dp)) {
+        code.forEach { ch ->
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer { translationY = card2Offset; alpha = if (visible) 1f else 0f }
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(CardSurface)
-                    .border(1.dp, GlassBorder, RoundedCornerShape(20.dp))
-                    .padding(20.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Link, null, tint = CyanAccent, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Join a Group", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = joinCode,
-                        onValueChange = { if (it.length <= 6) joinCode = it.uppercase() },
-                        label = { Text("6-character code", color = TextMuted, fontSize = 12.sp) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CyanAccent,
-                            unfocusedBorderColor = GlassBorder,
-                            cursorColor = CyanAccent,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        ),
-                        textStyle = LocalTextStyle.current.copy(
-                            fontSize = 18.sp, letterSpacing = 6.sp,
-                            textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = {
-                            if (joinCode.length == 6) {
-                                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                isLoading = true; isError = false; statusMessage = ""
-                                groupManager.joinGroup(joinCode, displayName) { success, gid, gName, err ->
-                                    isLoading = false
-                                    if (success && gid != null) {
-                                        statusMessage = "Joined \"$gName\"!"
-                                        isError = false
-                                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                        onGroupJoined(gid, "group_$gid")
-                                    } else {
-                                        statusMessage = err ?: "Failed to join"
-                                        isError = true
-                                        view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                                    }
-                                }
-                            }
-                        },
-                        enabled = joinCode.length == 6 && !isLoading,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.fillMaxSize()
-                                .background(
-                                    if (joinCode.length == 6 && !isLoading)
-                                        Brush.horizontalGradient(listOf(CyanAccent, TealGlow))
-                                    else Brush.horizontalGradient(listOf(ElevatedSurface, ElevatedSurface)),
-                                    RoundedCornerShape(14.dp)
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                            } else {
-                                Text("Join Group", fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                                    color = if (joinCode.length == 6) DeepNavy else TextMuted)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Status message
-            AnimatedVisibility(
-                visible = statusMessage.isNotEmpty(),
-                enter = slideInVertically(spring(dampingRatio = 0.7f)) + fadeIn(),
-                exit = slideOutVertically() + fadeOut()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isError) ErrorRed.copy(alpha = 0.1f) else SuccessGreen.copy(alpha = 0.1f))
-                        .border(1.dp,
-                            if (isError) ErrorRed.copy(alpha = 0.2f) else SuccessGreen.copy(alpha = 0.2f),
-                            RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                ) {
-                    Text(
-                        text = statusMessage,
-                        color = if (isError) ErrorRed else SuccessGreen,
-                        fontSize = 13.sp, textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
+                Modifier.size(if (small) 30.dp else 44.dp, if (small) 38.dp else 54.dp).clip(RoundedCornerShape(if (small) 9.dp else 14.dp))
+                    .background(c.textPrimary.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) { Text(ch.toString(), color = c.textPrimary, fontSize = if (small) 16.sp else 22.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center) }
         }
     }
 }

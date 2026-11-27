@@ -5,6 +5,7 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import com.alancruse.wallpaper.addFreshSingleValueEvent
 
 class PairingManager(private val currentUid: String) {
 
