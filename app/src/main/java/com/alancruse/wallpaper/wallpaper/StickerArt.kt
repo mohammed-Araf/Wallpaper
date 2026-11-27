@@ -4,6 +4,7 @@ import android.graphics.*
 import com.alancruse.wallpaper.canvas.StickerElement
 import com.alancruse.wallpaper.live.AvatarLook
 import com.alancruse.wallpaper.live.LiveSource
+import com.alancruse.wallpaper.live.Pet
 import com.alancruse.wallpaper.live.Status
 import com.alancruse.wallpaper.live.LiveStats
 import com.alancruse.wallpaper.live.Presence
@@ -44,6 +45,7 @@ object StickerArt {
         "w:clock" -> 82f to 60f
         "w:analog" -> 54f to 56f
         "w:countdown" -> 94f to 64f
+        "w:pet" -> 92f to 74f
         else -> 50f to 50f
     }
 
@@ -83,6 +85,7 @@ object StickerArt {
                 "w:clock" -> digitalClock(c)
                 "w:analog" -> analogClock(c)
                 "w:countdown" -> countdown(c, s, st)
+                "w:pet" -> petCard(c, s, st)
                 else -> { fill.color = INK; c.drawCircle(0f, 0f, 20f, fill) }
             }
         } finally { c.restore() }
@@ -820,6 +823,223 @@ object StickerArt {
             }
         }
         if (here) c.restore()
+    }
+
+    // ═════════ Shared pet ("w:pet") ═════════
+    //
+    // Card 180 × 136; the floor line is y = 44. The pet's state comes from timestamps on
+    // the sticker (see Pet), worked out from the viewer's clock.
+
+    private fun petCaption(m: Pet.Mood) = when (m) {
+        Pet.Mood.EATING -> "nom nom nom"
+        Pet.Mood.PLAYING -> "playing!"
+        Pet.Mood.SLEEPING -> "sleeping"
+        Pet.Mood.HAPPY -> "happy & full"
+        Pet.Mood.PECKISH -> "a bit peckish"
+        Pet.Mood.HUNGRY -> "hungry!"
+        Pet.Mood.SAD -> "misses you"
+    }
+
+    private fun petCard(c: Canvas, s: Float, st: StickerElement) {
+        val now = clockNow()
+        val lk = Pet.look(st.look)
+        val mood = Pet.mood(st, now)
+        val hour = (((now + java.util.TimeZone.getDefault().getOffset(now)) / 3_600_000L) % 24).toInt()
+        val dark = hour >= 19 || hour < 6
+        val w = 180f; val h = 136f
+        shape.reset(); shape.addRoundRect(-w / 2, -h / 2, w / 2, h / 2, 32f, 32f, Path.Direction.CW)
+        toon(c, shape, if (dark) 0xFF2E2A63.toInt() else 0xFFFFE3C2.toInt(), depth = 8f, stroke = 5f, gloss = false)
+        c.save(); c.clipPath(shape)
+        room(c, s, dark)
+        val full = st.fedAt > 0 && now - st.fedAt < Pet.PECKISH_AFTER
+        petBowl(c, 50f, 44f, full, mood == Pet.Mood.EATING, s)
+        if (mood == Pet.Mood.PLAYING) {
+            val bx = 40f + sin(s * 2.4f) * 22f; val by = 38f - abs(sin(s * 5f)) * 32f
+            circle(c, bx, by, 6.5f, 0xFFB6F04A.toInt(), depth = 1.5f)
+            line.color = Color.WHITE; line.strokeWidth = 1.6f
+            c.drawArc(bx - 4.5f, by - 4.5f, bx + 4.5f, by + 4.5f, 200f, 120f, false, line); line.color = INK
+        }
+        val px = if (mood == Pet.Mood.EATING) 18f else -14f
+        c.save(); c.scale(1.15f, 1.15f, px, 44f)
+        petBody(c, s, lk, mood, px, 0f)
+        c.restore()
+        petFx(c, s, mood, px, lk.species)
+        chunky(c, petCaption(mood), 0f, 60f, 13f, maxW = 160f)
+        c.restore()
+        line.strokeWidth = 5f; line.color = INK
+        c.drawRoundRect(-w / 2, -h / 2, w / 2, h / 2, 32f, 32f, line)
+        val streak = Pet.streak(st, now)
+        if (streak > 0) {
+            c.save(); c.translate(-74f, -48f); c.scale(0.2f, 0.2f); fire(c, s); c.restore()
+            chunky(c, "$streak", -64f, -41f, 14f, 0xFFFFE066.toInt(), align = Paint.Align.LEFT)
+        }
+        plate(c, st.label, -68f)
+    }
+
+    private fun petBowl(c: Canvas, x: Float, y: Float, full: Boolean, eating: Boolean, s: Float) {
+        if (full) {
+            for (i in 0 until 7) {
+                val kx = x - 9f + (i % 4) * 6f + (i / 4) * 3f
+                val ky = y - 11f - (i / 4) * 4f + if (eating) sin(s * 9f + i) * 1.2f else 0f
+                dot(c, kx, ky, 3.2f, 0xFFB5651D.toInt())
+            }
+        }
+        aux.reset(); aux.moveTo(x - 15f, y - 10f); aux.lineTo(x + 15f, y - 10f); aux.lineTo(x + 10f, y); aux.lineTo(x - 10f, y); aux.close()
+        toon(c, aux, 0xFFFF6B6B.toInt(), depth = 2.5f, stroke = 3f, round = 3f, shadow = false)
+    }
+
+    private fun petBody(c: Canvas, s: Float, lk: Pet.Look, mood: Pet.Mood, px: Float, py: Float) {
+        val col = Pet.COLORS[lk.color]
+        val dark = shade(col, 0.8f)
+        val sleep = mood == Pet.Mood.SLEEPING
+        val sad = mood == Pet.Mood.SAD || mood == Pet.Mood.HUNGRY
+        val hop = when (mood) {
+            Pet.Mood.PLAYING -> -abs(sin(s * 5f)) * 9f
+            Pet.Mood.HAPPY -> -abs(sin(s * 1.6f)) * 2.5f
+            else -> 0f
+        }
+        val breathe = 1f + sin(s * if (sleep) 1.4f else 2.2f) * 0.03f
+        c.save(); c.translate(px, py + hop)
+        // Head position: lower when eating (into the bowl), lying when asleep
+        val hx = when { mood == Pet.Mood.EATING -> 12f; sleep -> -12f; else -> 0f }
+        val hy = when { mood == Pet.Mood.EATING -> 14f; sleep -> 24f; sad -> 6f; else -> 2f }
+        val hr = if (sleep) 19f else 22f
+
+        // Tail (behind the body)
+        when (lk.species) {
+            0 -> { // cat: long curvy tail, swishing
+                val sw = sin(s * 2f) * 6f
+                aux.reset(); aux.moveTo(16f, 38f); aux.quadTo(38f, 34f + sw * 0.3f, 34f + sw, 10f)
+                line.color = INK; line.strokeWidth = 11f; line.style = Paint.Style.STROKE; c.drawPath(aux, line)
+                line.color = col; line.strokeWidth = 6f; c.drawPath(aux, line); line.color = INK
+            }
+            1 -> { // dog: short wagging tail
+                val wag = sin(s * if (mood == Pet.Mood.HAPPY || mood == Pet.Mood.PLAYING || mood == Pet.Mood.EATING) 16f else 3f) * 7f
+                limb(c, 16f, 34f, 30f, 22f + wag, 6f, col)
+            }
+            else -> dot(c, 20f, 38f, 7f, Color.WHITE) // bunny puff
+        }
+        // Body
+        c.save(); c.scale(1f, breathe, 0f, 44f)
+        aux.reset()
+        if (sleep) aux.addOval(-28f, 26f, 28f, 46f, Path.Direction.CW) else aux.addOval(-20f, 16f, 20f, 46f, Path.Direction.CW)
+        toon(c, aux, col, depth = 3f, stroke = 4f, gloss = false)
+        c.restore()
+        // Front paws
+        if (!sleep) { dot(c, -9f, 44f, 5f, dark); dot(c, 9f, 44f, 5f, dark) }
+
+        // Ears behind the head (cat, bunny)
+        if (lk.species == 0) {
+            for (sgn in intArrayOf(-1, 1)) {
+                aux.reset(); aux.moveTo(hx + sgn * 17f, hy - 8f); aux.lineTo(hx + sgn * 14f, hy - hr - 9f); aux.lineTo(hx + sgn * 3f, hy - hr + 2f); aux.close()
+                toon(c, aux, col, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false, round = 3f)
+                aux.reset(); aux.moveTo(hx + sgn * 14f, hy - 11f); aux.lineTo(hx + sgn * 13f, hy - hr - 3f); aux.lineTo(hx + sgn * 6f, hy - hr + 3f); aux.close()
+                fill.color = 0xFFFFA8C5.toInt(); c.drawPath(aux, fill)
+            }
+        } else if (lk.species == 2) {
+            for (sgn in intArrayOf(-1, 1)) {
+                val droop = if (sad || sleep) 50f else 8f + sin(s * 1.8f + sgn) * 4f
+                c.save(); c.rotate(sgn * droop, hx + sgn * 8f, hy - hr + 4f)
+                aux.reset(); aux.addOval(hx + sgn * 8f - 6f, hy - hr - 30f, hx + sgn * 8f + 6f, hy - hr + 6f, Path.Direction.CW)
+                toon(c, aux, col, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false)
+                fill.color = 0xFFFFA8C5.toInt(); c.drawOval(hx + sgn * 8f - 2.5f, hy - hr - 24f, hx + sgn * 8f + 2.5f, hy - hr + 1f, fill)
+                c.restore()
+            }
+        }
+        // Head
+        aux.reset(); aux.addCircle(hx, hy, hr, Path.Direction.CW)
+        toon(c, aux, col, depth = 2.5f, stroke = 4f, gloss = true, shadow = false)
+        // Dog: muzzle and floppy ears
+        if (lk.species == 1) {
+            fill.color = shade(col, 1.25f); c.drawOval(hx - 10f, hy + 2f, hx + 10f, hy + 17f, fill)
+            for (sgn in intArrayOf(-1, 1)) {
+                val flap = if (sad || sleep) 8f else sin(s * 2.5f + sgn) * 6f
+                c.save(); c.rotate(-sgn * (12f + flap), hx + sgn * 17f, hy - 15f)
+                aux.reset(); aux.addOval(hx + sgn * 20f - 7f, hy - 17f, hx + sgn * 20f + 7f, hy + 11f, Path.Direction.CW)
+                toon(c, aux, dark, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false)
+                c.restore()
+            }
+        }
+        // Face
+        val ey = hy + 1f
+        val blink = (s % 4.2f) < 0.12f
+        line.color = INK; line.strokeWidth = 2.6f; line.style = Paint.Style.STROKE
+        when {
+            sleep || mood == Pet.Mood.EATING -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 3f, hx + sgn * 8f + 4f, ey + 3f, 10f, 160f, false, line)
+            mood == Pet.Mood.HAPPY || mood == Pet.Mood.PLAYING -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 2f, hx + sgn * 8f + 4f, ey + 5f, 200f, 140f, false, line)
+            blink -> for (sgn in intArrayOf(-1, 1)) c.drawLine(hx + sgn * 8f - 3.5f, ey, hx + sgn * 8f + 3.5f, ey, line)
+            else -> for (sgn in intArrayOf(-1, 1)) {
+                fill.color = INK; c.drawOval(hx + sgn * 8f - 3.5f, ey - 4.5f, hx + sgn * 8f + 3.5f, ey + 4.5f, fill)
+                fill.color = Color.WHITE; c.drawCircle(hx + sgn * 8f + 1.2f, ey - 1.8f, 1.4f, fill)
+                if (sad) c.drawLine(hx + sgn * 4f, ey - 9f + 0f, hx + sgn * 12f, ey - 7f - 3f, line.apply { strokeWidth = 2f })
+                line.strokeWidth = 2.6f
+            }
+        }
+        // Blush
+        fill.color = 0x66FF7AA2; c.drawOval(hx - 17f, hy + 6f, hx - 10f, hy + 10f, fill); c.drawOval(hx + 10f, hy + 6f, hx + 17f, hy + 10f, fill)
+        // Nose and mouth
+        fill.color = if (lk.species == 1) INK else 0xFFFF7AA2.toInt()
+        c.drawOval(hx - 2.6f, hy + 6.5f, hx + 2.6f, hy + 9.5f, fill)
+        line.strokeWidth = 2f
+        when {
+            mood == Pet.Mood.EATING -> { val o = 1.5f + abs(sin(s * 9f)) * 2f; fill.color = INK; c.drawOval(hx - 2.5f, hy + 11f, hx + 2.5f, hy + 11f + o * 2f, fill) }
+            sad -> c.drawArc(hx - 4f, hy + 12f, hx + 4f, hy + 17f, 200f, 140f, false, line)
+            lk.species == 1 && (mood == Pet.Mood.HAPPY || mood == Pet.Mood.PLAYING) -> {
+                c.drawArc(hx - 6f, hy + 6f, hx + 6f, hy + 15f, 20f, 140f, false, line)
+                fill.color = 0xFFFF7AA2.toInt(); c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, fill)
+                line.strokeWidth = 1.5f; c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, line)
+            }
+            else -> {
+                c.drawArc(hx - 4.5f, hy + 8f, hx, hy + 12.5f, 20f, 140f, false, line)
+                c.drawArc(hx, hy + 8f, hx + 4.5f, hy + 12.5f, 20f, 140f, false, line)
+            }
+        }
+        // Whiskers (cat)
+        if (lk.species == 0) {
+            line.strokeWidth = 1.3f
+            for (sgn in intArrayOf(-1, 1)) for (k in -1..1) c.drawLine(hx + sgn * 11f, hy + 9f + k * 2.5f, hx + sgn * 22f, hy + 8f + k * 4.5f, line)
+        }
+        line.strokeWidth = 3f
+        c.restore()
+    }
+
+    private fun petFx(c: Canvas, s: Float, mood: Pet.Mood, px: Float, species: Int) {
+        when (mood) {
+            Pet.Mood.EATING, Pet.Mood.PLAYING, Pet.Mood.HAPPY -> {
+                val n = if (mood == Pet.Mood.HAPPY) 1 else 3
+                for (i in 0 until n) {
+                    val ph = (s * 0.5f + i / n.toFloat()) % 1f
+                    c.save(); c.translate(px - 18f + i * 16f + sin(s * 2f + i) * 4f, -18f - ph * 34f)
+                    heartPath(shape, 5f)
+                    fill.color = 0xFFFF5C8A.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawPath(shape, fill); fill.alpha = 255
+                    c.restore()
+                }
+            }
+            Pet.Mood.SLEEPING -> for (i in 0..2) {
+                val ph = (s * 0.4f + i / 3f) % 1f
+                chunky(c, "z", px + 6f + ph * 22f, 10f - ph * 34f, 9f + ph * 6f, alpha = ((1f - ph) * 255).toInt())
+            }
+            Pet.Mood.HUNGRY, Pet.Mood.SAD, Pet.Mood.PECKISH -> {
+                c.save(); c.translate(px + 34f, -30f + sin(s * 2f) * 2f)
+                shape.reset(); shape.addRoundRect(-22f, -12f, 22f, 12f, 11f, 11f, Path.Direction.CW)
+                shape.moveTo(-12f, 10f); shape.lineTo(-20f, 20f); shape.lineTo(-4f, 11f); shape.close()
+                toon(c, shape, Color.WHITE, depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+                txt.style = Paint.Style.FILL; txt.color = INK; txt.textAlign = Paint.Align.CENTER
+                txt.textSize = if (mood == Pet.Mood.PECKISH) 9f else 10f
+                c.drawText(if (mood == Pet.Mood.PECKISH) "snack?" else "feed me!", 0f, 3.5f, txt)
+                c.restore()
+                if (mood == Pet.Mood.SAD) {
+                    val ph = (s * 0.8f) % 1f
+                    fill.color = 0xFF7CC6FF.toInt(); fill.alpha = ((1f - ph) * 255).toInt()
+                    c.drawCircle(px - 9f, 12f + ph * 14f, 2.2f, fill); fill.alpha = 255
+                }
+            }
+        }
+    }
+
+    /** The pet alone in a ~90-unit box, for the species picker. */
+    fun petPreview(c: Canvas, look: String, timeMs: Long) {
+        petBody(c, (timeMs % 3_600_000L) / 1000f, Pet.look(look), Pet.Mood.HAPPY, 0f, -14f)
     }
 
     // ═════════ Status avatar ("w:me") ═════════

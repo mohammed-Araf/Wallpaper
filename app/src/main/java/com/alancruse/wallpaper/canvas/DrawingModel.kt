@@ -38,6 +38,13 @@ data class StickerElement(
     val look: String = "",
     /** Countdown sticker: the moment it counts down to (epoch ms, 0 = not set). */
     val until: Long = 0L,
+    /** Shared pet: when it was last fed / played with, by whom, and the feeding streak. */
+    val fedAt: Long = 0L,
+    val playedAt: Long = 0L,
+    val careBy: String = "",
+    val streak: Int = 0,
+    /** Day (yyyy-MM-dd, the carer's calendar) of the feeding that counted towards [streak]. */
+    val streakDay: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 

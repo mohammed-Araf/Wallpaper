@@ -53,6 +53,8 @@ object LiveTracker {
     private val roomNeeds = HashMap<String, Needs>()
     /** Other people's Me stickers per room (uid → name plate), for the battery buddy. */
     private val roomAvatars = HashMap<String, Map<String, String>>()
+    /** Shared pets per room, for the "hungry" reminder. */
+    private val roomPets = HashMap<String, List<StickerElement>>()
     private val distRooms get() = roomNeeds.filterValues { it.dist }.keys
     private val needSteps get() = roomNeeds.values.any { it.steps }
     private val needLocation get() = roomNeeds.values.any { it.dist || it.location }
@@ -72,7 +74,8 @@ object LiveTracker {
         if (refs == 0 || --refs > 0) return
         LiveBoard.unobserve(onBoard)
         roomListeners.values.forEach { (r, l) -> r.removeEventListener(l) }
-        roomListeners.clear(); roomNeeds.clear(); roomAvatars.clear()
+        roomListeners.clear(); roomNeeds.clear(); roomAvatars.clear(); roomPets.clear()
+        handler.removeCallbacks(petCheck)
         nudgeListeners.values.forEach { (r, l) -> r.removeEventListener(l) }; nudgeListeners.clear()
         distWatched.forEach { LiveBoard.unwatchPresence(it) }; distWatched.clear()
         stopSteps(); stopLocation(); stopStatus()
@@ -90,7 +93,7 @@ object LiveTracker {
     private fun watchRooms() {
         val rooms = myRooms()
         (roomListeners.keys - rooms).forEach { id ->
-            roomListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }; roomNeeds.remove(id); roomAvatars.remove(id)
+            roomListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }; roomNeeds.remove(id); roomAvatars.remove(id); roomPets.remove(id)
             nudgeListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }
         }
         uid?.let { me ->
@@ -117,8 +120,10 @@ object LiveTracker {
                     )
                     roomAvatars[id] = st.filter { StickerKinds.needsStatus(it.kind) && it.owner.isNotEmpty() && it.owner != me }
                         .associate { it.owner to it.label }
+                    roomPets[id] = st.filter { StickerKinds.isPet(it.kind) }
                     apply()
                     checkBatteries()
+                    checkPets()
                 }
                 override fun onCancelled(e: DatabaseError) {}
             }
@@ -242,6 +247,38 @@ object LiveTracker {
                 }
             }
         }
+    }
+
+    // ═════════ Pet reminder ═════════
+    //
+    // One notification per meal when a shared pet gets hungry (never at night: it waits
+    // until 9 am). Whoever feeds it resets everyone's reminder.
+
+    private const val PET_CHANNEL = "pet"
+    private val petCheck = Runnable { if (refs > 0) checkPets() }
+
+    private fun checkPets() {
+        handler.removeCallbacks(petCheck)
+        val now = System.currentTimeMillis()
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val day = hour in 9..21
+        var next = Long.MAX_VALUE
+        for ((room, pets) in roomPets) for (p in pets) {
+            val at = Pet.hungryAt(p)
+            if (at <= 0L) continue
+            if (now < at) { next = minOf(next, at); continue }
+            if (prefs.getLong("pet_hungry_$room", 0L) == p.fedAt || now - at > 24 * Pet.HOUR) continue
+            if (!day) { next = minOf(next, now + Pet.HOUR); continue }
+            prefs.edit().putLong("pet_hungry_$room", p.fedAt).apply()
+            val name = p.label.ifBlank { "Your pet" }
+            val streak = Pet.streak(p, now)
+            notify(
+                PET_CHANNEL, "Pet", "When your shared pet gets hungry",
+                "pet:$room".hashCode(), "🐾 $name is hungry",
+                if (streak > 1) "Feed $name to keep your $streak-day streak going" else "Open the canvas and feed $name",
+            )
+        }
+        if (next != Long.MAX_VALUE) handler.postDelayed(petCheck, (next - now).coerceIn(60_000L, 6 * Pet.HOUR))
     }
 
     // ═════════ Ghost mode ═════════
