@@ -28,7 +28,7 @@ class AvatarRenderTest {
     fun renderScenes() {
         val outDir = System.getProperty("avatar.out") ?: "build/avatar"
         val out = File(outDir).apply { mkdirs() }
-        val scenes = listOf(Status.PHONE, Status.RIDE, Status.CYCLE, Status.WALK, Status.MUSIC, Status.CHARGE, Status.SLEEP, Status.AWAY, Status.NONE)
+        val scenes = listOf(Status.PHONE, Status.RIDE, Status.CYCLE, Status.WALK, Status.MUSIC, Status.CHARGE, Status.SLEEP, Status.AWAY, Status.GHOST, Status.NONE)
         val looks = listOf(
             "boy" to AvatarLook(gender = 0, skin = 2, hair = 1, hairColor = 0, outfit = 4, dark = 0, ride = 0),
             "girl" to AvatarLook(gender = 1, skin = 1, hair = 1, hairColor = 1, outfit = 0, dark = 1, ride = 1),

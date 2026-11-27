@@ -30,6 +30,8 @@ object Status {
     const val CHARGE = "charge"
     const val AWAY = "away"
     const val SLEEP = "sleep"   // derived only
+    /** Ghost mode: the owner paused sharing for a while. */
+    const val GHOST = "ghost"
     const val NONE = ""
 
     val REST = setOf(AWAY, CHARGE)

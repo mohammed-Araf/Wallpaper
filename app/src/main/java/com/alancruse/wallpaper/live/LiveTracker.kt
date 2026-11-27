@@ -111,15 +111,50 @@ object LiveTracker {
     private val distWatched = HashSet<String>()
 
     private fun apply() {
+        val ghost = ghosting()
+        handler.removeCallbacks(ghostEnd)
+        if (ghost) {
+            val left = ghostUntil(app) - System.currentTimeMillis()
+            // Re-checked at least every 6 h; "until I turn it off" never expires on its own.
+            if (ghostUntil(app) != Long.MAX_VALUE) handler.postDelayed(ghostEnd, left.coerceIn(1_000L, 6 * 3_600_000L))
+        }
         if (needSteps && has(Manifest.permission.ACTIVITY_RECOGNITION)) startSteps() else stopSteps()
         // Watch partners' positions in rooms with a distance sticker; drop mine where none is left.
         val want = distRooms
         (want - distWatched).forEach { LiveBoard.watchPresence(it) }
         (distWatched - want).forEach { r -> LiveBoard.unwatchPresence(r); uid?.let { db.child("canvas_sessions").child(r).child("presence").child(it).removeValue() } }
         distWatched.clear(); distWatched.addAll(want)
-        if (needLocation && hasLocation()) reconfigureLocation() else stopLocation()
-        if (needStatus) startStatus() else stopStatus()
+        // Ghost mode: stop the location and take my position off every canvas.
+        if (ghost && !ghostCleared) uid?.let { me -> want.forEach { db.child("canvas_sessions").child(it).child("presence").child(me).removeValue() } }
+        ghostCleared = ghost
+        if (!ghost && needLocation && hasLocation()) reconfigureLocation() else stopLocation()
+        if (!ghost && needStatus) startStatus() else stopStatus()
+        if (ghost != lastGhost) { lastGhost = ghost; flushStats(force = true) }
     }
+
+    // ═════════ Ghost mode ═════════
+    //
+    // Pauses everything that says where I am or what I'm doing (status, battery, speed,
+    // position) without removing any stickers. Steps keep counting. Stored per phone.
+
+    private var ghostCleared = false
+    private var lastGhost = false
+    private val ghostEnd = Runnable { if (refs > 0) apply() }
+    private fun ghostPrefs(ctx: Context) = ctx.getSharedPreferences("ghost", Context.MODE_PRIVATE)
+
+    /** When ghost mode ends (epoch ms; Long.MAX_VALUE = until turned off), or 0 when it's off. */
+    fun ghostUntil(ctx: Context): Long {
+        val u = ghostPrefs(ctx).getLong("until", 0L)
+        return if (u > System.currentTimeMillis()) u else 0L
+    }
+
+    /** Turn ghost mode on until [until] (Long.MAX_VALUE = until turned off), or off with 0. */
+    fun setGhost(ctx: Context, until: Long) {
+        ghostPrefs(ctx).edit().putLong("until", until).putLong("since", if (until > 0) System.currentTimeMillis() else 0L).apply()
+        if (refs > 0) handler.post { apply() }
+    }
+
+    private fun ghosting() = ghostUntil(app) > 0
 
     private fun has(p: String) = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && p == Manifest.permission.ACTIVITY_RECOGNITION ||
         ContextCompat.checkSelfPermission(app, p) == PackageManager.PERMISSION_GRANTED
@@ -221,7 +256,7 @@ object LiveTracker {
 
     private fun publishPresence(loc: Location) {
         val me = uid ?: return
-        if (distRooms.isEmpty()) return
+        if (distRooms.isEmpty() || ghosting()) return
         // ~110 m precision; nothing finer ever leaves the phone.
         val p = Presence(Math.round(loc.latitude * 1000) / 1000.0, Math.round(loc.longitude * 1000) / 1000.0, System.currentTimeMillis(), name)
         distRooms.forEach { db.child("canvas_sessions").child(it).child("presence").child(me).setValue(p) }
@@ -438,10 +473,12 @@ object LiveTracker {
         val me = uid ?: return
         val now = System.currentTimeMillis()
         val on = statusOn
+        val ghost = ghosting()
         val stats = LiveStats(
-            stepsToday, kmToday(), if (now - speedAt < 5 * 60_000L) speed else 0f, speedAt, day, name, now,
-            status = if (on) status else "", statusAt = if (on) statusAt else 0L,
-            battery = if (on) battery else -1, charging = on && plugged,
+            stepsToday, kmToday(), if (!ghost && now - speedAt < 5 * 60_000L) speed else 0f, if (ghost) 0L else speedAt, day, name, now,
+            status = when { ghost && needStatus -> Status.GHOST; on -> status; else -> "" },
+            statusAt = when { ghost && needStatus -> ghostPrefs(app).getLong("since", now); on -> statusAt; else -> 0L },
+            battery = if (on && !ghost) battery else -1, charging = on && !ghost && plugged,
             tz = TimeZone.getDefault().getOffset(now) / 60_000,
         )
         LiveBoard.putMyStats(stats)

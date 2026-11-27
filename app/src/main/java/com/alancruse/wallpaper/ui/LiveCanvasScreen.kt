@@ -1172,7 +1172,7 @@ private fun AvatarBuilder(initial: AvatarLook, isNew: Boolean, onSave: (AvatarLo
     LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
     val scenes = listOf(
         Status.PHONE to "Phone", Status.RIDE to "Riding", Status.WALK to "Walking", Status.MUSIC to "Music",
-        Status.CHARGE to "Charging", Status.SLEEP to "Sleeping", Status.CYCLE to "Cycling", Status.AWAY to "Chilling",
+        Status.CHARGE to "Charging", Status.SLEEP to "Sleeping", Status.CYCLE to "Cycling", Status.AWAY to "Chilling", Status.GHOST to "Ghost",
     )
     var scene by remember { mutableStateOf(Status.PHONE) }
     val src = remember(scene) {
@@ -1227,6 +1227,8 @@ private fun AvatarBuilder(initial: AvatarLook, isNew: Boolean, onSave: (AvatarLo
             }
         }
 
+        if (!isNew) GhostControls { on -> scene = if (on) Status.GHOST else Status.PHONE }
+
         Label("Avatar")
         GlassSegmented(
             listOf(Icons.Rounded.Male to "Boy", Icons.Rounded.Female to "Girl"), look.gender,
@@ -1272,10 +1274,71 @@ private fun AvatarBuilder(initial: AvatarLook, isNew: Boolean, onSave: (AvatarLo
             }
         }
         Text(
-            "Shows what you're up to — on the phone, riding, walking, music, charging or asleep — from your screen, charger and motion. Delete the sticker to stop sharing.",
+            "Shows what you're up to — on the phone, riding, walking, music, charging or asleep — from your screen, charger and motion. Use ghost mode to pause, or delete the sticker to stop sharing.",
             color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp)
         )
         AccentButton({ onSave(look) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Add sticker" else "Save")
+    }
+}
+
+/**
+ * Ghost mode: pause sharing status, battery and location for a while, without deleting
+ * stickers. Others see a ghost "on a break". [onChange] is told when it's turned on/off.
+ */
+@Composable
+private fun GhostControls(onChange: (Boolean) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    val context = LocalContext.current
+    var until by remember { mutableLongStateOf(LiveTracker.ghostUntil(context)) }
+    fun set(u: Long) { LiveTracker.setGhost(context, u); until = LiveTracker.ghostUntil(context); haptic(Haptic.Confirm); onChange(u > 0) }
+    val nextMorning = remember {
+        java.util.Calendar.getInstance().apply {
+            if (get(java.util.Calendar.HOUR_OF_DAY) >= 9) add(java.util.Calendar.DAY_OF_YEAR, 1)
+            set(java.util.Calendar.HOUR_OF_DAY, 9); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+    val on = until > 0
+    val untilText = when {
+        !on -> ""
+        until == Long.MAX_VALUE -> "Paused until you turn it off"
+        else -> {
+            val is24 = android.text.format.DateFormat.is24HourFormat(context)
+            val sameDay = android.text.format.DateUtils.isToday(until)
+            "Paused until " + java.text.SimpleDateFormat((if (sameDay) "" else "EEE ") + (if (is24) "HH:mm" else "h:mm a"), java.util.Locale.getDefault()).format(java.util.Date(until))
+        }
+    }
+
+    @Composable
+    fun Chip(text: String, onClick: () -> Unit) = Text(
+        text, color = c.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+        modifier = Modifier.clip(CircleShape).background(c.textPrimary.copy(alpha = 0.08f))
+            .clickable { onClick() }.padding(horizontal = 12.dp, vertical = 8.dp)
+    )
+
+    Column(
+        Modifier.fillMaxWidth().padding(top = 14.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (on) c.accent.copy(alpha = 0.16f) else c.textPrimary.copy(alpha = 0.05f)).padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (on) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, null, tint = if (on) c.accent else c.textSecondary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Ghost mode", color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (on) untilText else "Pause sharing your status, battery and location",
+                    color = c.textSecondary, fontSize = 12.sp
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (on) Chip("Turn off") { set(0L) }
+            else {
+                Chip("1 hour") { set(System.currentTimeMillis() + 3_600_000L) }
+                Chip("Until morning") { set(nextMorning) }
+                Chip("Until I turn it off") { set(Long.MAX_VALUE) }
+            }
+        }
     }
 }
 

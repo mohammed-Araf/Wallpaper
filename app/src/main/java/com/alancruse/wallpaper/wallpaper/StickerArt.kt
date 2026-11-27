@@ -858,6 +858,7 @@ object StickerArt {
         Status.CHARGE -> "phone charging"
         Status.SLEEP -> "sleeping"
         Status.AWAY -> "chilling"
+        Status.GHOST -> "on a break"
         else -> "no status yet"
     }
 
@@ -879,6 +880,7 @@ object StickerArt {
             Status.CHARGE -> sceneCharge(c, s, lk, dark)
             Status.SLEEP -> sceneSleep(c, s, lk)
             Status.AWAY -> sceneAway(c, s, lk, dark)
+            Status.GHOST -> sceneGhost(c, s, lk, dark)
             else -> sceneHello(c, s, lk, dark)
         }
         // caption on the floor
@@ -888,7 +890,7 @@ object StickerArt {
         c.restore()
         line.strokeWidth = 5f; line.color = INK; line.pathEffect = null
         c.drawRoundRect(-w / 2, -h / 2, w / 2, h / 2, 34f, 34f, line)
-        if (stats != null && stats.battery >= 0 && status.isNotEmpty()) batteryChip(c, -84f, -56f, stats.battery, stats.charging, s)
+        if (stats != null && stats.battery >= 0 && status.isNotEmpty() && status != Status.GHOST) batteryChip(c, -84f, -56f, stats.battery, stats.charging, s)
         plate(c, st.label, -75f)
     }
 
@@ -1394,6 +1396,29 @@ object StickerArt {
             val ph = (s * 0.5f + i / 4f) % 1f
             note(c, 14f + ph * 30f + sin(ph * 8f + i) * 5f, -30f - ph * 34f + i * 2f, 1f + (i % 2) * 0.25f, cols[i], (sin(ph * PI.toFloat()) * 255).toInt())
         }
+    }
+
+    /** Ghost mode: a sheet-ghost (with the owner's hair poking out) floating in a dim room. */
+    private fun sceneGhost(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        fill.color = if (dark) 0x55000000 else 0x33201040; c.drawRect(-100f, -90f, 100f, 90f, fill)
+        for (i in 0..4) {
+            val ph = (s * 0.35f + i * 0.2f) % 1f
+            sparkle(c, -70f + i * 35f, 30f - ph * 90f, 2.5f * (1f - ph) + 0.5f, 0xFFE9E3FF.toInt())
+        }
+        val by = sin(s * 2.5f) * 6f
+        // hair tuft on top of the sheet, in the owner's hair colour
+        aux.reset(); aux.moveTo(-6f, -36f + by); aux.quadTo(-4f, -50f + by, 4f, -48f + by); aux.quadTo(0f, -44f + by, 6f, -38f + by)
+        line.color = INK; line.strokeWidth = 8f; c.drawPath(aux, line)
+        line.color = AvatarLook.HAIR_COLORS[lk.hairColor]; line.strokeWidth = 4f; c.drawPath(aux, line); line.color = INK
+        c.save(); c.translate(0f, 2f); c.scale(0.95f, 0.95f); ghost(c, s); c.restore()
+        // "shh" bubble
+        c.save(); c.translate(-52f, -26f + by * 0.5f)
+        shape.reset(); shape.addRoundRect(-17f, -10f, 17f, 10f, 9f, 9f, Path.Direction.CW)
+        toon(c, shape, Color.WHITE, depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textSize = 10f; txt.textAlign = Paint.Align.CENTER
+        c.drawText("shh", 0f, 3.5f, txt)
+        c.restore()
     }
 
     private fun sceneHello(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
