@@ -34,6 +34,8 @@ data class StickerElement(
     val owner: String = "",
     /** Name plate on live stickers ("Araf", "Sneha"…), editable with the text tool. */
     val label: String = "",
+    /** Avatar look for the status sticker (see AvatarLook), e.g. "g1s2h0c3o4d0r0". */
+    val look: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 

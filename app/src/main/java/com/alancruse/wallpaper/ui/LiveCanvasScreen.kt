@@ -72,7 +72,13 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.google.firebase.auth.FirebaseAuth
+import com.alancruse.wallpaper.live.AvatarLook
 import com.alancruse.wallpaper.live.LiveBoard
+import com.alancruse.wallpaper.live.LiveSource
+import com.alancruse.wallpaper.live.LiveStats
+import com.alancruse.wallpaper.live.Presence
+import com.alancruse.wallpaper.live.Status
+import androidx.compose.foundation.verticalScroll
 import com.alancruse.wallpaper.live.LiveTracker
 import com.alancruse.wallpaper.live.StickerKinds
 import com.alancruse.wallpaper.wallpaper.StickerArt
@@ -169,6 +175,9 @@ fun LiveCanvasScreen(
     var editing by remember { mutableStateOf<TextEdit?>(null) }
     // Name plate being edited on a live sticker: sticker index + draft text
     var plateEdit by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    // Status avatar look being edited: sticker index (null = about to add one) + look
+    var avatarEdit by remember { mutableStateOf<Pair<Int?, AvatarLook>?>(null) }
+    val avatarPrefs = remember { context.getSharedPreferences("avatar", android.content.Context.MODE_PRIVATE) }
     var uploading by remember { mutableStateOf(false) }
 
     // Element drag → dustbin
@@ -210,7 +219,7 @@ fun LiveCanvasScreen(
     }
     fun requestLivePerms(k: String) {
         val perms = buildList {
-            if (StickerKinds.needsSteps(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
+            if (StickerKinds.needsActivity(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
             if (StickerKinds.needsLocation(k)) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (perms.isNotEmpty()) { pendingKind = k; livePermLauncher.launch(perms.toTypedArray()) } else { maybeBackground(k); LiveTracker.refresh() }
@@ -517,6 +526,11 @@ fun LiveCanvasScreen(
                                         ) {
                                             // Text tool + tap on a live sticker → edit its name plate
                                             plateEdit = g.second to sync.sharedStickers[g.second].label
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.needsStatus(it.kind) && it.owner == FirebaseAuth.getInstance().currentUser?.uid } == true
+                                        ) {
+                                            // Tap my own status avatar → change how it looks
+                                            avatarEdit = g.second to AvatarLook.decode(sync.sharedStickers[g.second].look)
                                         } else if (!draggingEl && g.first == ElType.IMAGE) {
                                             sync.sharedImages.getOrNull(g.second)?.let { img ->
                                                 sync.updateImage(g.second, img.copy(style = (img.style + 1).mod(CanvasRenderer.IMAGE_STYLES)))
@@ -865,6 +879,12 @@ fun LiveCanvasScreen(
                         }
                         }
                         else -> StickerMarket(if (t == 1) StickerKinds.animated else StickerKinds.widgets, if (t == 1) 4 else 2) { k ->
+                            if (StickerKinds.needsStatus(k)) {
+                                // Dress the avatar up first; it's placed on save.
+                                showStickers = false
+                                avatarEdit = null to AvatarLook.decode(avatarPrefs.getString("look", "") ?: "")
+                                return@StickerMarket
+                            }
                             val p = visibleCenter()
                             val widget = StickerKinds.isWidget(k)
                             sync.pushSticker(StickerElement(
@@ -877,6 +897,26 @@ fun LiveCanvasScreen(
                             if (widget) requestLivePerms(k)
                         }
                     }
+                }
+            }
+
+            GlassSheet(avatarEdit != null, { avatarEdit = null }) {
+                val ae = avatarEdit
+                if (ae != null) AvatarBuilder(ae.second, isNew = ae.first == null) { look ->
+                    avatarPrefs.edit().putString("look", look.encode()).apply()
+                    val idx = ae.first
+                    if (idx == null) {
+                        val p = visibleCenter()
+                        sync.pushSticker(StickerElement(
+                            emoji = FallbackEmoji["w:me"] ?: "🧍", kind = "w:me",
+                            owner = FirebaseAuth.getInstance().currentUser?.uid ?: "",
+                            label = FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "",
+                            look = look.encode(), x = p.x, y = p.y, size = 170f / viewScale
+                        ))
+                        tool = Tool.MOVE
+                        requestLivePerms("w:me")
+                    } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(look = look.encode())) }
+                    haptic(Haptic.Confirm); avatarEdit = null
                 }
             }
 
@@ -996,8 +1036,125 @@ private fun fontFamilyFor(font: Int) = fontFamilies.getOrPut(font.mod(CanvasRend
 private val FallbackEmoji = mapOf(
     "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
     "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
-    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆",
+    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆", "w:me" to "🧍",
 )
+
+/** Dress-up sheet for the status avatar, with a live preview of every scene. */
+@Composable
+private fun AvatarBuilder(initial: AvatarLook, isNew: Boolean, onSave: (AvatarLook) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    var look by remember { mutableStateOf(initial) }
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val scenes = listOf(
+        Status.PHONE to "Phone", Status.RIDE to "Riding", Status.WALK to "Walking", Status.MUSIC to "Music",
+        Status.CHARGE to "Charging", Status.SLEEP to "Sleeping", Status.CYCLE to "Cycling", Status.AWAY to "Chilling",
+    )
+    var scene by remember { mutableStateOf(Status.PHONE) }
+    val src = remember(scene) {
+        object : LiveSource {
+            override val myUid = "me"
+            override fun stats(uid: String): LiveStats {
+                val now = System.currentTimeMillis()
+                return LiveStats(status = scene, statusAt = now - 17 * 60_000L, updatedAt = now,
+                    battery = if (scene == Status.CHARGE) 41 else 78, charging = scene == Status.CHARGE)
+            }
+            override fun presence(roomId: String) = emptyMap<String, Presence>()
+        }
+    }
+    val name = remember { FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "" }
+
+    @Composable
+    fun Swatches(colors: IntArray, selected: Int, onPick: (Int) -> Unit) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            colors.forEachIndexed { i, col ->
+                val sel = i == selected
+                Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(Color(col))
+                        .border(if (sel) 3.dp else 1.dp, if (sel) c.accent else c.glassBorder, CircleShape)
+                        .clickable { haptic(Haptic.Tick); onPick(i) }
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun Label(text: String) = Text(text, color = c.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp))
+
+    Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.3f).clip(RoundedCornerShape(22.dp)).background(c.textPrimary.copy(alpha = 0.05f))) {
+            Canvas(Modifier.fillMaxSize()) {
+                val (hw, hh) = StickerArt.halfSize("w:me")
+                val u = minOf(size.width * 0.9f / (2 * hw), size.height * 0.86f / (2 * hh))
+                val sz = u * 100f
+                val st = StickerElement(kind = "w:me", owner = "me", label = name, look = look.encode(),
+                    x = size.width / 2, y = size.height / 2 + sz * 0.35f + 6f, size = sz)
+                StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, src, "preview")
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            scenes.forEach { (k, label) ->
+                val sel = k == scene
+                Text(
+                    label, color = if (sel) c.onAccent else c.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clip(CircleShape).background(if (sel) c.accent else c.textPrimary.copy(alpha = 0.07f))
+                        .clickable { haptic(Haptic.Tick); scene = k }.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+        }
+
+        Label("Avatar")
+        GlassSegmented(
+            listOf(Icons.Rounded.Male to "Boy", Icons.Rounded.Female to "Girl"), look.gender,
+            onSelect = { look = look.copy(gender = it) }
+        )
+        Label("Skin")
+        Swatches(AvatarLook.SKINS, look.skin) { look = look.copy(skin = it) }
+        Label("Hair")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AvatarLook.HAIR_NAMES[look.gender].forEachIndexed { i, hairName ->
+                val sel = i == look.hair
+                Column(
+                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) c.accent.copy(alpha = 0.18f) else c.textPrimary.copy(alpha = 0.05f))
+                        .border(if (sel) 2.dp else 0.dp, if (sel) c.accent else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable { haptic(Haptic.Tick); look = look.copy(hair = i) }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Canvas(Modifier.size(48.dp)) {
+                        val k = size.minDimension / 46f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                        StickerArt.avatarHead(nc, look.copy(hair = i), t)
+                        nc.restore()
+                    }
+                    Text(hairName, color = c.textSecondary, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Label("Hair colour")
+        Swatches(AvatarLook.HAIR_COLORS, look.hairColor) { look = look.copy(hairColor = it) }
+        Label("Outfit")
+        Swatches(AvatarLook.OUTFITS, look.outfit) { look = look.copy(outfit = it) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f)) {
+                Label("Card")
+                GlassSegmented(listOf(Icons.Rounded.LightMode to "Day", Icons.Rounded.DarkMode to "Night"), look.dark, onSelect = { look = look.copy(dark = it) })
+            }
+            Column(Modifier.weight(1f)) {
+                Label("Rides a")
+                GlassSegmented(listOf(Icons.Rounded.TwoWheeler to "Bike", Icons.Rounded.Moped to "Scooter"), look.ride,
+                    onSelect = { look = look.copy(ride = it); scene = Status.RIDE })
+            }
+        }
+        Text(
+            "Shows what you're up to — on the phone, riding, walking, music, charging or asleep — from your screen, charger and motion. Delete the sticker to stop sharing.",
+            color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp)
+        )
+        AccentButton({ onSave(look) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Add sticker" else "Save")
+    }
+}
 
 /** Grid of animated / live stickers, each previewed live with sample data. */
 @Composable

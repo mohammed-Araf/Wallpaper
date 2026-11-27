@@ -9,7 +9,49 @@ data class LiveStats(
     val day: String = "",
     val name: String = "",
     val updatedAt: Long = 0L,
+    /** What I'm doing right now (see [Status]); only filled while I have a status sticker. */
+    val status: String = "",
+    /** When the current status (or rest period) began. */
+    val statusAt: Long = 0L,
+    /** Battery percent, -1 when unknown. */
+    val battery: Int = -1,
+    val charging: Boolean = false,
+    /** My UTC offset in minutes, so others can tell when it's night for me. */
+    val tz: Int = 0,
 )
+
+/** Raw states published by the owner's phone; the renderer derives sleep from long rests. */
+object Status {
+    const val PHONE = "phone"
+    const val RIDE = "ride"
+    const val CYCLE = "cycle"
+    const val WALK = "walk"
+    const val MUSIC = "music"
+    const val CHARGE = "charge"
+    const val AWAY = "away"
+    const val SLEEP = "sleep"   // derived only
+    const val NONE = ""
+
+    val REST = setOf(AWAY, CHARGE)
+    private fun night(st: LiveStats, now: Long): Boolean {
+        val h = (((now + st.tz * 60_000L) / 3_600_000L) % 24).toInt()
+        return h >= 22 || h < 9
+    }
+
+    /** What to show for [st] at [now]: long rests become sleep, stale activities fade to away. */
+    fun effective(st: LiveStats?, now: Long = System.currentTimeMillis()): String {
+        if (st == null || st.status.isEmpty()) return NONE
+        val since = now - st.statusAt
+        val silent = now - st.updatedAt
+        return when (st.status) {
+            AWAY, CHARGE -> if ((since > 30 * 60_000L && night(st, now)) || since > 4 * 3_600_000L) SLEEP else st.status
+            // The owner's phone stopped reporting: don't leave them "riding" forever.
+            RIDE, CYCLE, WALK -> if (silent > 90 * 60_000L) AWAY else st.status
+            PHONE, MUSIC -> if (silent > 3 * 3_600_000L) (if (night(st, now)) SLEEP else AWAY) else st.status
+            else -> st.status
+        }
+    }
+}
 
 /** Rounded (~110 m) position, only written to canvases that hold a distance sticker. */
 data class Presence(
@@ -21,10 +63,13 @@ data class Presence(
 
 object StickerKinds {
     val animated = listOf("a:heart", "a:star", "a:fire", "a:sun", "a:moon", "a:ghost", "a:party", "a:rainbow", "a:love")
-    val widgets = listOf("w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
+    val widgets = listOf("w:me", "w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
 
     fun isWidget(k: String) = k.startsWith("w:")
     fun needsStats(k: String) = isWidget(k) && k != "w:dist"
+    /** The avatar that acts out what its owner is doing. */
+    fun needsStatus(k: String) = k == "w:me"
+    fun needsActivity(k: String) = needsSteps(k) || needsStatus(k)
     fun needsSteps(k: String) = k in setOf("w:steps", "w:km", "w:steps_km", "w:board")
     fun needsLocation(k: String) = k in setOf("w:dist", "w:km", "w:speed", "w:speed_km", "w:board")
 }

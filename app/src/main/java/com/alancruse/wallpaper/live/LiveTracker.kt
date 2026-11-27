@@ -48,10 +48,12 @@ object LiveTracker {
 
     // ── What my stickers need, per room ──
     private val roomListeners = HashMap<String, Pair<DatabaseReference, ValueEventListener>>()
-    private val roomNeeds = HashMap<String, Triple<Boolean, Boolean, Boolean>>() // dist, steps, location
-    private val distRooms get() = roomNeeds.filterValues { it.first }.keys
-    private val needSteps get() = roomNeeds.values.any { it.second }
-    private val needLocation get() = roomNeeds.values.any { it.first || it.third }
+    private data class Needs(val dist: Boolean, val steps: Boolean, val location: Boolean, val status: Boolean)
+    private val roomNeeds = HashMap<String, Needs>()
+    private val distRooms get() = roomNeeds.filterValues { it.dist }.keys
+    private val needSteps get() = roomNeeds.values.any { it.steps }
+    private val needLocation get() = roomNeeds.values.any { it.dist || it.location }
+    private val needStatus get() = roomNeeds.values.any { it.status }
 
     @Synchronized
     fun acquire(ctx: Context) {
@@ -69,7 +71,7 @@ object LiveTracker {
         roomListeners.values.forEach { (r, l) -> r.removeEventListener(l) }
         roomListeners.clear(); roomNeeds.clear()
         distWatched.forEach { LiveBoard.unwatchPresence(it) }; distWatched.clear()
-        stopSteps(); stopLocation()
+        stopSteps(); stopLocation(); stopStatus()
         flushStats(force = true)
     }
 
@@ -92,10 +94,11 @@ object LiveTracker {
                 override fun onDataChange(s: DataSnapshot) {
                     val me = uid
                     val st = s.children.mapNotNull { it.getValue(StickerElement::class.java) }
-                    roomNeeds[id] = Triple(
+                    roomNeeds[id] = Needs(
                         st.any { it.kind == "w:dist" },
                         st.any { it.owner == me && StickerKinds.needsSteps(it.kind) },
                         st.any { it.owner == me && StickerKinds.needsLocation(it.kind) },
+                        st.any { it.owner == me && StickerKinds.needsStatus(it.kind) },
                     )
                     apply()
                 }
@@ -115,6 +118,7 @@ object LiveTracker {
         (distWatched - want).forEach { r -> LiveBoard.unwatchPresence(r); uid?.let { db.child("canvas_sessions").child(r).child("presence").child(it).removeValue() } }
         distWatched.clear(); distWatched.addAll(want)
         if (needLocation && hasLocation()) reconfigureLocation() else stopLocation()
+        if (needStatus) startStatus() else stopStatus()
     }
 
     private fun has(p: String) = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && p == Manifest.permission.ACTIVITY_RECOGNITION ||
@@ -202,6 +206,7 @@ object LiveTracker {
             if (dt in 1f..120f) { speed = prev.distanceTo(loc) / dt * 3.6f; speedAt = now }
         }
         if (speed > 12f) lastFast = now
+        if (statusOn) evaluate()
         // Distance travelled in a vehicle (walking is already counted by steps).
         if (prev != null && speed > 10f && loc.accuracy < 50f) vehicleKm += prev.distanceTo(loc) / 1000f
         last = loc
@@ -278,6 +283,152 @@ object LiveTracker {
         fused = null; currentInterval = 0L; currentPriority = 0
     }
 
+    // ═════════ Status (the avatar sticker) ═════════
+    //
+    // Everything here is event driven: screen on/off, charger, battery and Google's
+    // activity transitions (in vehicle / on bicycle / walking) wake us up; a slow tick
+    // only catches music playing with the screen off. Sleep is not detected here: the
+    // renderer turns a long night-time rest into sleep, so it works while this phone dozes.
+
+    private const val ACTION_TRANSITION = "com.alancruse.wallpaper.ACTIVITY_TRANSITION"
+    private var statusOn = false
+    private var interactive = true
+    private var plugged = false
+    private var battery = -1
+    private var activity = ""          // "", ride, cycle, walk
+    private var status = Status.NONE
+    private var statusAt = 0L
+    private var restSince = 0L         // start of the current rest (screen off, not moving)
+    private var lastRestSince = 0L     // the rest before a short wake, so a 3 a.m. peek doesn't reset sleep
+    private var transitionsPi: android.app.PendingIntent? = null
+
+    private val statusReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: Context, i: android.content.Intent) {
+            when (i.action) {
+                android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> interactive = true
+                android.content.Intent.ACTION_SCREEN_OFF -> interactive = false
+                android.content.Intent.ACTION_BATTERY_CHANGED -> {
+                    val lvl = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+                    val pct = if (lvl >= 0 && scale > 0) lvl * 100 / scale else -1
+                    val p = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+                    // Only bother the network when it's worth showing.
+                    val worth = p != plugged || battery < 0 || kotlin.math.abs(pct - battery) >= 5 || (pct <= 15 && pct != battery)
+                    battery = pct; plugged = p
+                    if (!worth) return
+                    evaluate(); flushStats(force = true); return
+                }
+                ACTION_TRANSITION -> onTransitions(i)
+            }
+            evaluate()
+        }
+    }
+
+    private fun onTransitions(i: android.content.Intent) {
+        if (!ActivityTransitionResult.hasResult(i)) return
+        val r = ActivityTransitionResult.extractResult(i) ?: return
+        for (e in r.transitionEvents) {
+            val a = when (e.activityType) {
+                DetectedActivity.IN_VEHICLE -> Status.RIDE
+                DetectedActivity.ON_BICYCLE -> Status.CYCLE
+                DetectedActivity.WALKING, DetectedActivity.RUNNING -> Status.WALK
+                else -> ""   // STILL
+            }
+            if (e.transitionType == ActivityTransition.ACTIVITY_TRANSITION_ENTER) activity = a
+            else if (activity == a) activity = ""
+        }
+    }
+
+    private val tick = object : Runnable {
+        override fun run() { if (statusOn) { evaluate(); handler.postDelayed(this, 2 * 60_000L) } }
+    }
+    private val settle = Runnable { if (statusOn) evaluate(allowWake = true) }
+
+    @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
+    private fun startStatus() {
+        if (statusOn) return
+        statusOn = true
+        val pm = app.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        interactive = pm.isInteractive
+        val f = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_SCREEN_OFF)
+            addAction(android.content.Intent.ACTION_USER_PRESENT); addAction(android.content.Intent.ACTION_BATTERY_CHANGED)
+            addAction(ACTION_TRANSITION)
+        }
+        // Sticky: delivers the current battery state straight away.
+        ContextCompat.registerReceiver(app, statusReceiver, f, ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (has(Manifest.permission.ACTIVITY_RECOGNITION)) try {
+            val types = listOf(DetectedActivity.IN_VEHICLE, DetectedActivity.ON_BICYCLE, DetectedActivity.WALKING, DetectedActivity.RUNNING, DetectedActivity.STILL)
+            val req = ActivityTransitionRequest(types.flatMap { t ->
+                listOf(ActivityTransition.ACTIVITY_TRANSITION_ENTER, ActivityTransition.ACTIVITY_TRANSITION_EXIT).map {
+                    ActivityTransition.Builder().setActivityType(t).setActivityTransition(it).build()
+                }
+            })
+            val intent = android.content.Intent(ACTION_TRANSITION).setPackage(app.packageName)
+            // Play services fills in the result extras, so the intent must be mutable.
+            val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) android.app.PendingIntent.FLAG_MUTABLE else 0)
+            val pi = android.app.PendingIntent.getBroadcast(app, 7, intent, flags)
+            ActivityRecognition.getClient(app).requestActivityTransitionUpdates(req, pi)
+            transitionsPi = pi
+        } catch (e: Exception) { Log.w(TAG, "activity transitions unavailable", e) }
+        restSince = System.currentTimeMillis()
+        evaluate(allowWake = true)
+        handler.postDelayed(tick, 2 * 60_000L)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopStatus() {
+        if (!statusOn) return
+        statusOn = false
+        handler.removeCallbacks(tick); handler.removeCallbacks(settle)
+        try { app.unregisterReceiver(statusReceiver) } catch (_: Exception) {}
+        transitionsPi?.let { pi -> try { ActivityRecognition.getClient(app).removeActivityTransitionUpdates(pi) } catch (_: Exception) {} }
+        transitionsPi = null
+        status = Status.NONE; activity = ""
+        flushStats(force = true)
+    }
+
+    private fun candidate(): String {
+        val now = System.currentTimeMillis()
+        val music = try { (app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).isMusicActive } catch (_: Exception) { false }
+        val fast = now - speedAt < 2 * 60_000L && speed > 15f
+        return when {
+            activity == Status.RIDE || (fast && activity != Status.CYCLE) -> Status.RIDE
+            activity == Status.CYCLE -> Status.CYCLE
+            activity == Status.WALK -> Status.WALK
+            interactive -> if (music) Status.MUSIC else Status.PHONE
+            music -> Status.MUSIC
+            plugged -> Status.CHARGE
+            else -> Status.AWAY
+        }
+    }
+
+    /**
+     * Picks the status and publishes it when it changes. Waking the screen from a rest only
+     * counts after 10 s, so glancing at the clock doesn't flip the avatar out of bed.
+     */
+    private fun evaluate(allowWake: Boolean = false) {
+        val next = candidate()
+        if (next == status) return
+        val waking = status in Status.REST && (next == Status.PHONE || next == Status.MUSIC)
+        if (waking && !allowWake) { handler.removeCallbacks(settle); handler.postDelayed(settle, 10_000L); return }
+        val now = System.currentTimeMillis()
+        if (next in Status.REST) {
+            if (status !in Status.REST) {
+                val shortWake = (status == Status.PHONE || status == Status.MUSIC) && now - statusAt < 2 * 60_000L && lastRestSince > 0
+                restSince = if (shortWake) lastRestSince else now
+            }
+            statusAt = restSince
+        } else {
+            if (status in Status.REST) lastRestSince = restSince
+            statusAt = now
+        }
+        status = next
+        Log.d(TAG, "status → $status")
+        flushStats(force = true)
+    }
+
     // ═════════ Publishing ═════════
 
     private var lastWrite = 0L
@@ -286,7 +437,13 @@ object LiveTracker {
     private fun flushStats(force: Boolean = false) {
         val me = uid ?: return
         val now = System.currentTimeMillis()
-        val stats = LiveStats(stepsToday, kmToday(), if (now - speedAt < 5 * 60_000L) speed else 0f, speedAt, day, name, now)
+        val on = statusOn
+        val stats = LiveStats(
+            stepsToday, kmToday(), if (now - speedAt < 5 * 60_000L) speed else 0f, speedAt, day, name, now,
+            status = if (on) status else "", statusAt = if (on) statusAt else 0L,
+            battery = if (on) battery else -1, charging = on && plugged,
+            tz = TimeZone.getDefault().getOffset(now) / 60_000,
+        )
         LiveBoard.putMyStats(stats)
         val due = force || now - lastWrite > 60_000L || (lastWrittenSteps >= 0 && stepsToday - lastWrittenSteps >= 200)
         if (!due) return
