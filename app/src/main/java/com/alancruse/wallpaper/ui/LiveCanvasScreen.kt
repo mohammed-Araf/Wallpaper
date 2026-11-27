@@ -267,6 +267,16 @@ fun LiveCanvasScreen(
 
     fun resetView() { viewScale = 1f; viewOffset = Offset.Zero }
 
+    // Generous bin zone with hysteresis so small finger jitter never cancels a delete.
+    val binEnterPx = with(density) { 190.dp.toPx() }
+    val binExitPx = with(density) { 250.dp.toPx() }
+    fun updateBin(y: Float) {
+        val fromBottom = screenH - y
+        val now = if (overBin) fromBottom < binExitPx else fromBottom < binEnterPx
+        if (now && !overBin) haptic(Haptic.Confirm)
+        overBin = now
+    }
+
     BackHandler {
         when {
             editing != null -> commitText()
@@ -305,11 +315,9 @@ fun LiveCanvasScreen(
                         when (activeTool) {
                             Tool.PEN -> if (canEdit) { livePoints.clear(); livePoints.add(startCanvas.toPoint()); redraw++ }
                             Tool.ERASER -> if (canEdit && !eraseWhole) { eraserPos = startCanvas; sync.erasePointsNear(startCanvas.x, startCanvas.y, eraserWidth / viewScale) }
-                            Tool.MOVE -> if (canEdit) {
+                            Tool.MOVE, Tool.TEXT -> if (canEdit) {
                                 grabbed = hitTest(startCanvas)
-                                if (grabbed != null) { draggingEl = true; haptic(Haptic.Tick) }
                             }
-                            Tool.TEXT -> {}
                         }
 
                         // ── multi-finger tracking ──
@@ -343,29 +351,36 @@ fun LiveCanvasScreen(
                                     Tool.ERASER -> if (canEdit && !eraseWhole) {
                                         eraserPos = cp; sync.erasePointsNear(cp.x, cp.y, eraserWidth / viewScale)
                                     }
-                                    Tool.MOVE -> {
+                                    Tool.MOVE, Tool.TEXT -> {
                                         val g = grabbed
                                         if (g != null) {
-                                            transformEl(g, d / viewScale, 1f, 0f)
-                                            val wasOver = overBin
-                                            overBin = ch.position.y > screenH * 0.86f
-                                            if (overBin && !wasOver) haptic(Haptic.Confirm)
-                                        } else if (settings.pinchZoom && viewScale != 1f) {
+                                            // Small slop before a press becomes a drag, so taps stay taps.
+                                            if (!draggingEl && travel > 10f) { draggingEl = true; haptic(Haptic.Tick) }
+                                            if (draggingEl) {
+                                                transformEl(g, d / viewScale, 1f, 0f)
+                                                updateBin(ch.position.y)
+                                            }
+                                        } else if (activeTool == Tool.MOVE && settings.pinchZoom && viewScale != 1f) {
                                             viewOffset += d
                                         }
                                     }
-                                    Tool.TEXT -> {}
                                 }
                                 ch.consume()
                                 continue
                             }
 
                             // ── became a multi-finger gesture: cancel the single-finger action ──
+                            val centroid = Offset(pressed.map { it.position.x }.average().toFloat(), pressed.map { it.position.y }.average().toFloat())
                             if (!multi) {
                                 multi = true
-                                livePoints.clear(); eraserPos = null; overBin = false; redraw++
+                                livePoints.clear(); eraserPos = null; redraw++
+                                // Two fingers on an item grab it in any tool (Instagram-story style).
+                                if (canEdit && grabbed == null && pressed.size == 2) {
+                                    grabbed = hitTest(toCanvas(centroid))
+                                        ?: pressed.firstNotNullOfOrNull { hitTest(toCanvas(it.position)) }
+                                }
+                                if (grabbed != null && !draggingEl) { draggingEl = true; haptic(Haptic.Tick) }
                             }
-                            val centroid = Offset(pressed.map { it.position.x }.average().toFloat(), pressed.map { it.position.y }.average().toFloat())
                             if (pressed.size >= 3) {
                                 if (threeStart == null) threeStart = centroid
                                 threeTravel = centroid - threeStart!!
@@ -383,6 +398,7 @@ fun LiveCanvasScreen(
                                     val g = grabbed
                                     if (g != null) {
                                         transformEl(g, pan / viewScale, sf, rot)
+                                        updateBin(centroid.y)
                                     } else if (settings.pinchZoom) {
                                         val ns = (viewScale * sf).coerceIn(0.4f, 5f)
                                         viewOffset = centroid - (centroid - viewOffset) * (ns / viewScale) + pan
@@ -410,24 +426,22 @@ fun LiveCanvasScreen(
                                     }
                                     eraserPos = null
                                 }
-                                Tool.MOVE -> {
+                                Tool.MOVE, Tool.TEXT -> {
                                     val g = grabbed
                                     if (g != null) {
-                                        if (overBin) { deleteEl(g); haptic(Haptic.Reject) }
-                                        else if (isTap && g.first == ElType.TEXT) {
+                                        if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
+                                        else if (!draggingEl && g.first == ElType.TEXT) {
                                             sync.sharedTexts.getOrNull(g.second)?.let { t ->
                                                 editing = TextEdit(t.x, t.y, g.second, t.text)
                                             }
                                         }
+                                    } else if (activeTool == Tool.TEXT && canEdit && isTap) {
+                                        editing = TextEdit(startCanvas.x, startCanvas.y, null, "")
                                     }
                                 }
-                                Tool.TEXT -> if (canEdit && isTap) {
-                                    val hit = hitTest(startCanvas)
-                                    editing = if (hit?.first == ElType.TEXT) {
-                                        val t = sync.sharedTexts[hit.second]; TextEdit(t.x, t.y, hit.second, t.text)
-                                    } else TextEdit(startCanvas.x, startCanvas.y, null, "")
-                                }
                             }
+                        } else if (grabbed != null && draggingEl && overBin) {
+                            deleteEl(grabbed!!); haptic(Haptic.Reject)
                         } else {
                             val tap2 = maxPtr == 2 && duration < 320 && multiTravel < 30f && abs(multiScale - 1f) < 0.08f
                             if (tap2 && settings.twoFingerUndo && canEdit && grabbed == null) {
