@@ -304,6 +304,9 @@ class MainActivity : ComponentActivity() {
         groups.forEach { g -> add(CanvasRoom(g.roomId, "group", g.name, g.memberCount, g.joinCode, g.groupId)) }
     }
 
+    override fun onStart() { super.onStart(); com.alancruse.wallpaper.live.LiveTracker.acquire(this) }
+    override fun onStop() { com.alancruse.wallpaper.live.LiveTracker.release(); super.onStop() }
+
     override fun onResume() {
         super.onResume()
         // Refresh groups when returning from canvas

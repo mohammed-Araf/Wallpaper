@@ -28,6 +28,10 @@ data class StickerElement(
     val size: Float = 80f,
     val rotation: Float = 0f,
     val scale: Float = 1f,
+    /** "" = emoji · "a:*" = animated cartoon · "w:*" = live widget (see StickerKinds). */
+    val kind: String = "",
+    /** For stat widgets: whose numbers it shows. */
+    val owner: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 

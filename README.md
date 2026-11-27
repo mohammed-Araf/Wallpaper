@@ -39,6 +39,19 @@ A stroke is cancelled automatically if a second finger lands mid-stroke, so zoom
 
 Move · Pen · Eraser · Text · Stickers · Image. Tap the active tool again to open its tray (colors, size, opacity; eraser mode and size). Stickers: tap to drop in the middle, or long-press and drag onto the canvas. **⋯** (top right) holds background colors, set as Home / Lock, fit to screen and clear.
 
+### Sticker market
+
+The sticker button opens three tabs: **Emoji**, **Animated** and **Live**. Every animated and live sticker is drawn by the app in a cartoon "2.5D" style: thick ink outlines, an extruded underside, a gloss highlight, a ground shadow and chunky rounded lettering. They animate in the editor and on the home-screen wallpaper (about 20 fps, only while visible); the lock screen shows a still frame.
+
+- **Animated**: heart, star, fire, sun, sleepy moon, ghost, party popper, rainbow, LOVE.
+- **Live**: steps · km today · speed · steps + km · speed + km · billboard (all three) · distance.
+  - Stat stickers show the numbers of whoever placed them, and others see them update. The steps sticker upgrades with the day's count (3k → 6k → 10k → 15k: new colour, medal, sparkles, a gold shimmer, then a crown).
+  - Distance shows how far you are from your partner, or a list for groups, using positions rounded to ~110 m. "So close!" under 1 km, and hearts with "together!" under 150 m.
+
+Privacy: stats are shared as plain numbers (`users/{uid}/stats`). Positions are rounded on the phone and only written to canvases that contain a distance sticker (`canvas_sessions/{room}/presence`), and removed when the sticker is gone. Permissions (steps, location, "allow all the time") are asked when you place a live sticker.
+
+Battery: the step counter is the hardware sensor, batched. Location runs only while one of your stickers needs it and adapts its interval: 15–30 min when nobody is near, faster as someone gets closer (3 min → 1 min → 30 s), 10 min when you're both settled in the same place (campus / office), and 5 s only while moving faster than 12 km/h for speed. Android limits background location to a few updates per hour when no app screen is visible, so the fastest rates apply while the app or the wallpaper is in use.
+
 ### Home
 
 Tap a canvas to open it, long-press for Home / Lock / Invite / Members / Leave. The Home / Lock badges only appear on canvases that are really on screen.

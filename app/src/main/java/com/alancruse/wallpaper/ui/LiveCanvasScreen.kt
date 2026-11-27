@@ -67,6 +67,16 @@ import com.alancruse.wallpaper.wallpaper.CanvasRenderer
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import com.alancruse.wallpaper.canvas.ShapeSnap
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+import com.google.firebase.auth.FirebaseAuth
+import com.alancruse.wallpaper.live.LiveBoard
+import com.alancruse.wallpaper.live.LiveTracker
+import com.alancruse.wallpaper.live.StickerKinds
+import com.alancruse.wallpaper.wallpaper.StickerArt
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -172,6 +182,34 @@ fun LiveCanvasScreen(
     fun toCanvas(o: Offset) = (o - viewOffset) / viewScale
     fun visibleCenter() = toCanvas(Offset(screenW / 2f, screenH / 2.4f))
 
+    // Animated / live stickers: frame clock only while some are on the canvas.
+    var frameMs by remember { mutableLongStateOf(0L) }
+    val hasLive = sync.sharedStickers.any { it.kind.isNotEmpty() }
+    LaunchedEffect(hasLive) { if (hasLive) while (true) withFrameMillis { frameMs = it } }
+    val liveWatcher = remember(sync) { LiveBoard.Watcher(sync.roomId) }
+    LaunchedEffect(sync) { snapshotFlow { sync.sharedStickers.toList() }.collect { liveWatcher.update(it) } }
+    DisposableEffect(sync) { onDispose { liveWatcher.close() } }
+
+    // Permissions are asked when a live sticker is placed, not up front.
+    var pendingKind by remember { mutableStateOf<String?>(null) }
+    val bgLocLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { LiveTracker.refresh() }
+    fun maybeBackground(k: String) {
+        if (StickerKinds.needsLocation(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) bgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    }
+    val livePermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        LiveTracker.refresh(); pendingKind?.let { maybeBackground(it) }; pendingKind = null
+    }
+    fun requestLivePerms(k: String) {
+        val perms = buildList {
+            if (StickerKinds.needsSteps(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
+            if (StickerKinds.needsLocation(k)) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
+        }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+        if (perms.isNotEmpty()) { pendingKind = k; livePermLauncher.launch(perms.toTypedArray()) } else { maybeBackground(k); LiveTracker.refresh() }
+    }
+
     // Decode images off the main thread, then redraw
     LaunchedEffect(sync) {
         snapshotFlow { sync.sharedImages.map { it.imageBase64 } }.collect { list ->
@@ -235,7 +273,10 @@ fun LiveCanvasScreen(
             val size = s.size * s.scale
             val l = local(s.x, s.y, s.rotation)
             val dx = l.x; val dy = l.y + size * 0.35f
-            if (sqrt(dx * dx + dy * dy) < size * 0.6f + slack) take(ElType.STICKER, i, s.timestamp)
+            if (s.kind.isNotEmpty()) {
+                val (hw, hh) = StickerArt.halfSize(s.kind); val u = size / 100f
+                if (abs(dx) < hw * u + slack && abs(dy) < hh * u + slack) take(ElType.STICKER, i, s.timestamp)
+            } else if (sqrt(dx * dx + dy * dy) < size * 0.6f + slack) take(ElType.STICKER, i, s.timestamp)
         }
         sync.sharedTexts.forEachIndexed { i, t ->
             val paint = CanvasRenderer.textPaintFor(t)
@@ -487,6 +528,7 @@ fun LiveCanvasScreen(
                 }
         ) {
             redraw // subscribe
+            frameMs; LiveBoard.version.intValue
             val nc = drawContext.canvas.nativeCanvas
             nc.save()
             nc.translate(viewOffset.x, viewOffset.y)
@@ -495,7 +537,7 @@ fun LiveCanvasScreen(
                 nc, null, sync.sharedStrokes, sync.sharedStickers,
                 editing?.index?.let { ei -> sync.sharedTexts.mapIndexed { i, t -> if (i == ei) t.copy(text = "") else t } } ?: sync.sharedTexts,
                 sync.sharedImages,
-                strokePaths = sync.strokePaths, decode = false
+                strokePaths = sync.strokePaths, decode = false, timeMs = frameMs, roomId = sync.roomId
             )
             if (livePoints.isNotEmpty()) {
                 livePaint.color = penColor.copy(alpha = penAlpha).toArgb()
@@ -729,34 +771,59 @@ fun LiveCanvasScreen(
 
             // ═════════ Sheets ═════════
             GlassSheet(showStickers, { showStickers = false; dragEmoji = null }) {
-                LazyVerticalGrid(
-                    GridCells.Fixed(8), Modifier.fillMaxWidth().heightIn(max = 300.dp).alpha(if (dragEmoji != null) 0.15f else 1f),
-                    contentPadding = PaddingValues(bottom = 8.dp)
-                ) {
-                    items(Emojis) { e ->
-                        var cellPos by remember { mutableStateOf(Offset.Zero) }
-                        Box(
-                            Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp))
-                                .onGloballyPositioned { cellPos = it.positionInRoot() }
-                                .pointerInput(e) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { o -> dragEmoji = e; dragEmojiPos = cellPos + o; haptic(Haptic.Tick) },
-                                        onDrag = { ch, amt -> ch.consume(); dragEmojiPos += amt },
-                                        onDragEnd = {
-                                            val p = toCanvas(dragEmojiPos)
-                                            sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y + 30f, size = 110f / viewScale))
-                                            haptic(Haptic.Confirm); dragEmoji = null; showStickers = false; tool = Tool.MOVE
+                var tab by remember { mutableIntStateOf(0) }
+                GlassSegmented(
+                    listOf(Icons.Rounded.EmojiEmotions to null, Icons.Rounded.AutoAwesome to null, Icons.Rounded.Sensors to null),
+                    tab, onSelect = { tab = it }, modifier = Modifier.padding(bottom = 12.dp)
+                )
+                AnimatedContent(
+                    tab, label = "stickerTab",
+                    transitionSpec = { (fadeIn() + slideInHorizontally(Motion.snappy()) { if (targetState > initialState) it / 5 else -it / 5 }) togetherWith fadeOut() }
+                ) { t ->
+                    when (t) {
+                        0 -> {
+                        LazyVerticalGrid(
+                            GridCells.Fixed(8), Modifier.fillMaxWidth().heightIn(max = 300.dp).alpha(if (dragEmoji != null) 0.15f else 1f),
+                            contentPadding = PaddingValues(bottom = 8.dp)
+                        ) {
+                            items(Emojis) { e ->
+                                var cellPos by remember { mutableStateOf(Offset.Zero) }
+                                Box(
+                                    Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp))
+                                        .onGloballyPositioned { cellPos = it.positionInRoot() }
+                                        .pointerInput(e) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = { o -> dragEmoji = e; dragEmojiPos = cellPos + o; haptic(Haptic.Tick) },
+                                                onDrag = { ch, amt -> ch.consume(); dragEmojiPos += amt },
+                                                onDragEnd = {
+                                                    val p = toCanvas(dragEmojiPos)
+                                                    sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y + 30f, size = 110f / viewScale))
+                                                    haptic(Haptic.Confirm); dragEmoji = null; showStickers = false; tool = Tool.MOVE
+                                                },
+                                                onDragCancel = { dragEmoji = null }
+                                            )
+                                        }
+                                        .clickable {
+                                            val p = visibleCenter()
+                                            sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y, size = 110f / viewScale))
+                                            haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
                                         },
-                                        onDragCancel = { dragEmoji = null }
-                                    )
-                                }
-                                .clickable {
-                                    val p = visibleCenter()
-                                    sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y, size = 110f / viewScale))
-                                    haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
-                                },
-                            contentAlignment = Alignment.Center
-                        ) { Text(e, fontSize = 26.sp) }
+                                    contentAlignment = Alignment.Center
+                                ) { Text(e, fontSize = 26.sp) }
+                            }
+                        }
+                        }
+                        else -> StickerMarket(if (t == 1) StickerKinds.animated else StickerKinds.widgets, if (t == 1) 4 else 2) { k ->
+                            val p = visibleCenter()
+                            val widget = StickerKinds.isWidget(k)
+                            sync.pushSticker(StickerElement(
+                                emoji = FallbackEmoji[k] ?: "✨", kind = k,
+                                owner = if (widget) FirebaseAuth.getInstance().currentUser?.uid ?: "" else "",
+                                x = p.x, y = p.y, size = (if (widget) 170f else 140f) / viewScale
+                            ))
+                            haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
+                            if (widget) requestLivePerms(k)
+                        }
                     }
                 }
             }
@@ -871,4 +938,40 @@ private fun textLook(style: Int, argb: Int, sizePx: Float, density: androidx.com
 private val fontFamilies = HashMap<Int, androidx.compose.ui.text.font.FontFamily>()
 private fun fontFamilyFor(font: Int) = fontFamilies.getOrPut(font.mod(CanvasRenderer.TEXT_FONTS)) {
     androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Typeface(CanvasRenderer.typeface(font)))
+}
+
+/** Shown by older app versions that don't know animated / live stickers. */
+private val FallbackEmoji = mapOf(
+    "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
+    "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
+    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆",
+)
+
+/** Grid of animated / live stickers, each previewed live with sample data. */
+@Composable
+private fun StickerMarket(kinds: List<String>, columns: Int, onPick: (String) -> Unit) {
+    val c = LocalWallpaperColors.current
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    LazyVerticalGrid(
+        GridCells.Fixed(columns), Modifier.fillMaxWidth().heightIn(max = 380.dp),
+        contentPadding = PaddingValues(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        itemsIndexed(kinds) { i, k ->
+            val src = remember { MutableInteractionSource() }
+            Box(
+                Modifier.enterAnim(i).aspectRatio(if (StickerKinds.isWidget(k)) 1.45f else 1f).pressScale(src, 0.9f)
+                    .clip(RoundedCornerShape(18.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                    .clickable(src, null) { onPick(k) }
+            ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val (hw, hh) = StickerArt.halfSize(k)
+                    val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
+                    val sz = u * 100f
+                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                    StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, StickerArt.Preview, "preview")
+                }
+            }
+        }
+    }
 }

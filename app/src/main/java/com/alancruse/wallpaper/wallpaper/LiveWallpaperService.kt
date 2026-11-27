@@ -23,8 +23,8 @@ class LiveWallpaperService : WallpaperService() {
 
     // The wallpaper service stays alive while it's the wallpaper — the cheapest
     // place to keep the lock screen in sync, with no foreground notification.
-    override fun onCreate() { super.onCreate(); LockSync.acquire(this) }
-    override fun onDestroy() { LockSync.release(); super.onDestroy() }
+    override fun onCreate() { super.onCreate(); LockSync.acquire(this); com.alancruse.wallpaper.live.LiveTracker.acquire(this) }
+    override fun onDestroy() { com.alancruse.wallpaper.live.LiveTracker.release(); LockSync.release(); super.onDestroy() }
 
     inner class WallpaperEngine : Engine() {
 
@@ -41,6 +41,14 @@ class LiveWallpaperService : WallpaperService() {
         private var visible = false
         private var dirty = true
         private val drawNow = Runnable { if (visible) { dirty = false; drawFrame() } }
+        // Live / animated stickers: ~20 fps, only while the home screen is visible.
+        private var animated = false
+        private var watcher: com.alancruse.wallpaper.live.LiveBoard.Watcher? = null
+        private val anim = object : Runnable {
+            override fun run() { if (visible && animated) { drawFrame(); handler.postDelayed(this, 50) } }
+        }
+        private fun startAnim() { handler.removeCallbacks(anim); if (visible && animated) handler.post(anim) }
+        private val boardObserver: () -> Unit = { requestDraw() }
         // Drop the network listener after a while off-screen; re-attach (from cache) when shown.
         private val idleStop = Runnable { if (!visible) stopListening() }
 
@@ -61,6 +69,7 @@ class LiveWallpaperService : WallpaperService() {
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
             PairingPrefs(this@LiveWallpaperService).registerOnChangeListener(prefsListener)
+            com.alancruse.wallpaper.live.LiveBoard.observe(boardObserver)
             startListening()
         }
 
@@ -76,8 +85,9 @@ class LiveWallpaperService : WallpaperService() {
                 handler.removeCallbacks(idleStop)
                 startListening()
                 if (dirty) { dirty = false; drawFrame() }
+                startAnim()
             } else {
-                handler.removeCallbacks(drawNow)
+                handler.removeCallbacks(drawNow); handler.removeCallbacks(anim)
                 handler.postDelayed(idleStop, 60_000)
             }
         }
@@ -89,6 +99,7 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             super.onDestroy()
             handler.removeCallbacksAndMessages(null)
+            com.alancruse.wallpaper.live.LiveBoard.unobserve(boardObserver)
             stopListening()
             PairingPrefs(this@LiveWallpaperService).unregisterOnChangeListener(prefsListener)
         }
@@ -112,6 +123,7 @@ class LiveWallpaperService : WallpaperService() {
 
             stopListening()
             currentListeningRoomId = roomId
+            watcher = com.alancruse.wallpaper.live.LiveBoard.Watcher(roomId)
 
             val roomRef = FirebaseDatabase.getInstance().reference.child("canvas_sessions").child(roomId)
 
@@ -121,6 +133,9 @@ class LiveWallpaperService : WallpaperService() {
             }
             addListener(roomRef.child("stickers")) { snap ->
                 stickers = snap.children.mapNotNull { it.getValue(StickerElement::class.java) }
+                watcher?.update(stickers)
+                animated = stickers.any { it.kind.isNotEmpty() }
+                startAnim()
                 requestDraw()
             }
             addListener(roomRef.child("texts")) { snap ->
@@ -151,6 +166,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun stopListening() {
             for ((ref, l) in listeners) ref.removeEventListener(l)
+            watcher?.close(); watcher = null
             listeners.clear()
             currentListeningRoomId = null
         }
@@ -161,7 +177,10 @@ class LiveWallpaperService : WallpaperService() {
             try {
                 canvas = holder.lockCanvas()
                 if (canvas != null) {
-                    CanvasRenderer.drawOnCanvas(canvas, bgColor, strokes, stickers, texts, images)
+                    CanvasRenderer.drawOnCanvas(
+                        canvas, bgColor, strokes, stickers, texts, images,
+                        timeMs = android.os.SystemClock.uptimeMillis(), roomId = currentListeningRoomId
+                    )
                 }
             } catch (e: Exception) {
                 Log.e("LiveWallpaper", "Draw error", e)

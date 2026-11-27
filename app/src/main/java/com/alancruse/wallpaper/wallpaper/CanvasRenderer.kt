@@ -196,6 +196,9 @@ object CanvasRenderer {
         images: List<ImageElement>,
         strokePaths: List<Path>? = null,
         decode: Boolean = true,
+        timeMs: Long = 0L,
+        live: com.alancruse.wallpaper.live.LiveSource? = com.alancruse.wallpaper.live.LiveBoard,
+        roomId: String? = null,
     ) {
         if (bgColor != null) canvas.drawColor(bgColor)
         val layers = ArrayList<Layer>(strokes.size + stickers.size + texts.size + images.size)
@@ -221,6 +224,7 @@ object CanvasRenderer {
             }
             1 -> {
                 val st = stickers.getOrNull(layer.index) ?: continue
+                if (st.kind.isNotEmpty()) { StickerArt.draw(canvas, st, timeMs, live, roomId); continue }
                 emojiPaint.textSize = st.size * st.scale
                 canvas.save(); canvas.rotate(st.rotation, st.x, st.y)
                 canvas.drawText(st.emoji, st.x, st.y, emojiPaint); canvas.restore()
@@ -251,7 +255,7 @@ object CanvasRenderer {
                 val scale = 0.3f
                 val bmp = Bitmap.createBitmap((screenW * scale).toInt().coerceAtLeast(1), (screenH * scale).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
                 val c = Canvas(bmp); c.scale(scale, scale)
-                drawOnCanvas(c, bgColor, strokes, stickers, texts, images)
+                drawOnCanvas(c, bgColor, strokes, stickers, texts, images, roomId = roomId)
                 FileOutputStream(thumbFile(context, roomId)).use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
                 bmp.recycle()
             } catch (e: Exception) { Log.e("CanvasRenderer", "Thumbnail failed", e) }

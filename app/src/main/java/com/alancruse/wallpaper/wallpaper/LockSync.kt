@@ -50,6 +50,8 @@ object LockSync {
     private var images = listOf<ImageElement>()
     private var bgColor = Color.BLACK
     private var dirty = false
+    private var watcher: com.alancruse.wallpaper.live.LiveBoard.Watcher? = null
+    private val boardObserver: () -> Unit = { if (roomId != null) { dirty = true; schedule(1500) } }
     private var forceNext = false
 
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -66,6 +68,7 @@ object LockSync {
         app = ctx.applicationContext
         PairingPrefs(app).registerOnChangeListener(prefsListener)
         app.registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        com.alancruse.wallpaper.live.LiveBoard.observe(boardObserver)
         listen()
     }
 
@@ -74,6 +77,7 @@ object LockSync {
         if (refs == 0 || --refs > 0) return
         stop()
         try { app.unregisterReceiver(screenReceiver) } catch (_: Exception) {}
+        com.alancruse.wallpaper.live.LiveBoard.unobserve(boardObserver)
         PairingPrefs(app).unregisterOnChangeListener(prefsListener)
     }
 
@@ -83,10 +87,11 @@ object LockSync {
         if (id == roomId && listeners.isNotEmpty()) return
         stop()
         roomId = id
+        watcher = com.alancruse.wallpaper.live.LiveBoard.Watcher(id)
         forceNext = true // new room: show it right away
         val room = FirebaseDatabase.getInstance().reference.child("canvas_sessions").child(id)
         add(room.child("strokes")) { s -> strokes = s.children.mapNotNull { it.getValue(DrawingStroke::class.java) } }
-        add(room.child("stickers")) { s -> stickers = s.children.mapNotNull { it.getValue(StickerElement::class.java) } }
+        add(room.child("stickers")) { s -> stickers = s.children.mapNotNull { it.getValue(StickerElement::class.java) }; watcher?.update(stickers) }
         add(room.child("texts")) { s -> texts = s.children.mapNotNull { it.getValue(TextElement::class.java) } }
         add(room.child("images")) { s -> images = s.children.mapNotNull { it.getValue(ImageElement::class.java) } }
         add(room.child("backgroundColor")) { s -> bgColor = s.getValue(Int::class.java) ?: Color.BLACK }
@@ -103,6 +108,7 @@ object LockSync {
     private fun stop() {
         listeners.forEach { (r, l) -> r.removeEventListener(l) }
         listeners.clear(); roomId = null
+        watcher?.close(); watcher = null
         handler.removeCallbacks(render)
     }
 
@@ -123,7 +129,7 @@ object LockSync {
             @Suppress("DEPRECATION")
             (app.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
             val bmp = Bitmap.createBitmap(dm.widthPixels, dm.heightPixels, Bitmap.Config.ARGB_8888)
-            CanvasRenderer.drawOnCanvas(Canvas(bmp), bgColor, strokes, stickers, texts, images)
+            CanvasRenderer.drawOnCanvas(Canvas(bmp), bgColor, strokes, stickers, texts, images, roomId = roomId)
             WallpaperManager.getInstance(app).setBitmap(bmp, null, true, WallpaperManager.FLAG_LOCK)
             bmp.recycle()
         } catch (e: Exception) { Log.e(TAG, "Lock render failed", e) }
