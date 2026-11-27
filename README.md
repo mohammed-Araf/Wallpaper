@@ -87,3 +87,16 @@ Kotlin · Jetpack Compose (BOM 2025.01) · Material 3 · Haze · Firebase Auth /
 1. Open in Android Studio.
 2. Put your own `google-services.json` in `app/`.
 3. Run on Android 8.0+ (API 26). Live blur needs Android 12+.
+
+### License
+
+Copyright © 2026 Mohammed Araf
+
+WallPaper is free and open-source software, released under the **GNU General Public License v3.0**. See [LICENSE](LICENSE).
+
+- You may use, study, change and share it.
+- If you distribute it, or anything built from it, you must release it under the same GPLv3 terms, with its full source code. Copies stay free and open source.
+
+**Commercial licensing:** companies that want to use WallPaper in a closed-source or proprietary product can get a separate commercial license. Please [open an issue](https://github.com/mohammed-Araf/Wallpaper/issues) or contact the author through GitHub to discuss terms.
+
+**Contributing:** by submitting a contribution, you agree that it is licensed under GPLv3 and that the author may also include it in commercially licensed versions of WallPaper.
