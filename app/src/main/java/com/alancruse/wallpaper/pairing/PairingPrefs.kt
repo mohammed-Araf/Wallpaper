@@ -91,6 +91,10 @@ class PairingPrefs(context: Context) {
             .apply()
     }
 
+    fun clearLockscreenWallpaper() {
+        prefs.edit().remove(KEY_LOCKSCREEN_ROOM_ID).remove(KEY_LOCKSCREEN_ROOM_TYPE).apply()
+    }
+
     fun resolvedLockscreenRoomId(): String? {
         return lockscreenRoomId ?: getWallpaperRoomId()
     }
@@ -146,7 +150,7 @@ class PairingPrefs(context: Context) {
     // ── Theme settings ──
 
     var themeMode: String
-        get() = prefs.getString(KEY_THEME_MODE, "dark") ?: "dark"
+        get() = prefs.getString(KEY_THEME_MODE, "oled") ?: "oled"
         set(value) = prefs.edit().putString(KEY_THEME_MODE, value).apply()
 
     // ── Clear ──

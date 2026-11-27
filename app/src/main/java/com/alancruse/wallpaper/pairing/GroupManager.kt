@@ -5,6 +5,7 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import com.alancruse.wallpaper.addFreshSingleValueEvent
 
 /**
  * Handles group creation, joining, leaving, and listing.
@@ -99,7 +100,7 @@ class GroupManager(private val currentUid: String) {
     ) {
         // Search for the group with this join code
         db.child("groups").orderByChild("joinCode").equalTo(joinCode.uppercase())
-            .addListenerForSingleValueEvent(object : ValueEventListener {
+            .addFreshSingleValueEvent(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     if (!snapshot.exists() || !snapshot.hasChildren()) {
                         onResult(false, null, null, "Invalid code. No group found.")
@@ -175,7 +176,7 @@ class GroupManager(private val currentUid: String) {
         db.updateChildren(updates).addOnSuccessListener {
             // Check remaining members
             db.child("groups").child(groupId)
-                .addListenerForSingleValueEvent(object : ValueEventListener {
+                .addFreshSingleValueEvent(object : ValueEventListener {
                     override fun onDataChange(snapshot: DataSnapshot) {
                         val membersSnap = snapshot.child("members")
 
@@ -211,7 +212,7 @@ class GroupManager(private val currentUid: String) {
      */
     fun getMyGroups(onResult: (List<GroupInfo>) -> Unit) {
         db.child("users").child(currentUid).child("groups")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
+            .addFreshSingleValueEvent(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     val groupIds = snapshot.children.mapNotNull { it.key }
                     if (groupIds.isEmpty()) {
@@ -224,7 +225,7 @@ class GroupManager(private val currentUid: String) {
 
                     groupIds.forEach { gid ->
                         db.child("groups").child(gid)
-                            .addListenerForSingleValueEvent(object : ValueEventListener {
+                            .addFreshSingleValueEvent(object : ValueEventListener {
                                 override fun onDataChange(groupSnap: DataSnapshot) {
                                     if (groupSnap.exists()) {
                                         results.add(GroupInfo(
@@ -258,7 +259,7 @@ class GroupManager(private val currentUid: String) {
         onResult: (GroupInfo?, List<MemberInfo>) -> Unit
     ) {
         db.child("groups").child(groupId)
-            .addListenerForSingleValueEvent(object : ValueEventListener {
+            .addFreshSingleValueEvent(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     if (!snapshot.exists()) {
                         onResult(null, emptyList())

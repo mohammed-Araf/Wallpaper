@@ -5,47 +5,34 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.view.HapticFeedbackConstants
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.alancruse.wallpaper.pairing.PairingPrefs
 import com.alancruse.wallpaper.system.WallpaperSwitchReceiver
+import com.alancruse.wallpaper.ui.components.*
 import com.alancruse.wallpaper.ui.theme.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 
-data class ScheduleSlot(
-    val roomId: String,
-    val roomType: String,
-    val label: String,
-    val hour: Int,
-    val minute: Int
-)
+data class ScheduleSlot(val roomId: String, val roomType: String, val label: String, val hour: Int, val minute: Int)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,237 +41,84 @@ fun AutoSwitchDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val view = LocalView.current
+    val c = LocalWallpaperColors.current
     val prefs = remember { PairingPrefs(context) }
-
-    var isEnabled by remember { mutableStateOf(prefs.isAutoSwitchEnabled) }
+    var enabled by remember { mutableStateOf(prefs.isAutoSwitchEnabled) }
     var slots by remember { mutableStateOf(loadSchedule(prefs)) }
-    var showTimePicker by remember { mutableStateOf(false) }
-    var showRoomPicker by remember { mutableStateOf(false) }
-    var pendingHour by remember { mutableIntStateOf(9) }
-    var pendingMinute by remember { mutableIntStateOf(0) }
+    var step by remember { mutableIntStateOf(0) } // 0 list, 1 time, 2 room
+    var pendingH by remember { mutableIntStateOf(9) }
+    var pendingM by remember { mutableIntStateOf(0) }
 
-    fun saveAndApply() {
+    fun saveAndClose() {
         saveSchedule(prefs, slots)
-        prefs.isAutoSwitchEnabled = isEnabled
-        if (isEnabled && slots.isNotEmpty()) {
-            registerAlarms(context, prefs)
-        } else {
-            cancelAlarms(context, slots.size)
-        }
+        prefs.isAutoSwitchEnabled = enabled
+        cancelAlarms(context, 20)
+        if (enabled && slots.isNotEmpty()) registerAlarms(context, prefs)
+        onDismiss()
     }
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = { saveAndApply(); onDismiss() }) {
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = CardSurface,
-            modifier = Modifier.border(1.dp, GlassBorder, RoundedCornerShape(24.dp))
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(20.dp)
-                    .animateContentSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Header
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Schedule, null, tint = CyanAccent, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Auto-Switch", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Spacer(modifier = Modifier.weight(1f))
-                    Switch(
-                        checked = isEnabled,
-                        onCheckedChange = {
-                            isEnabled = it
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedTrackColor = ElectricViolet,
-                            checkedThumbColor = Color.White,
-                            uncheckedTrackColor = ElevatedSurface,
-                            uncheckedThumbColor = TextMuted
-                        )
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Wallpaper changes automatically at scheduled times",
-                    fontSize = 11.sp, color = TextMuted
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Slot list
-                if (slots.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(60.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(ElevatedSurface),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No time slots yet", fontSize = 13.sp, color = TextMuted)
+    Dialog(onDismissRequest = { if (step == 0) saveAndClose() else step = 0 }) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(c.cardSurface).padding(20.dp)) {
+            when (step) {
+                0 -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconBadge(Icons.Rounded.Schedule, Tints.Teal)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Schedule", color = c.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        GlassSwitch(enabled) { enabled = it }
                     }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 250.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        itemsIndexed(slots) { index, slot ->
+                    Spacer(Modifier.height(16.dp))
+                    LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        itemsIndexed(slots) { i, slot ->
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(ElevatedSurface)
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(c.textPrimary.copy(alpha = 0.06f)).padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Time
-                                Text(
-                                    text = String.format("%02d:%02d", slot.hour, slot.minute),
-                                    fontSize = 16.sp, fontWeight = FontWeight.Bold,
-                                    color = CyanAccent, letterSpacing = 1.sp
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                // Room name
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(slot.label, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                                        color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        if (slot.roomType == "couple") "❤️ Couple" else "👥 Group",
-                                        fontSize = 10.sp, color = TextMuted
-                                    )
-                                }
-                                // Remove button
-                                IconButton(
-                                    onClick = {
-                                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                        slots = slots.toMutableList().also { it.removeAt(index) }
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(Icons.Rounded.Close, "Remove", tint = WarmRose, modifier = Modifier.size(14.dp))
-                                }
+                                Text(String.format("%02d:%02d", slot.hour, slot.minute), color = c.accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(14.dp))
+                                Icon(if (slot.roomType == "couple") Icons.Rounded.Favorite else Icons.Rounded.Group, null, tint = c.textMuted, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(slot.label, color = c.textPrimary, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                BareIconButton(Icons.Rounded.Close, { slots = slots.toMutableList().also { it.removeAt(i) } }, size = 38.dp, tint = c.textMuted)
                             }
                         }
                     }
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        AccentButton({ step = 1 }, Modifier.weight(1f), icon = Icons.Rounded.Add, color = c.textPrimary.copy(alpha = 0.12f), height = 50.dp)
+                        AccentButton({ saveAndClose() }, Modifier.weight(1f), icon = Icons.Rounded.Check, height = 50.dp)
+                    }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Add slot button
-                OutlinedButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                        showTimePicker = true
-                    },
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
-                ) {
-                    Icon(Icons.Rounded.Add, null, modifier = Modifier.size(16.dp), tint = CyanAccent)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Time Slot", fontSize = 13.sp, color = TextPrimary)
+                1 -> {
+                    val state = rememberTimePickerState(pendingH, pendingM)
+                    TimePicker(state, colors = TimePickerDefaults.colors(
+                        clockDialColor = c.textPrimary.copy(alpha = 0.06f), selectorColor = c.accent,
+                        timeSelectorSelectedContainerColor = c.accent.copy(alpha = 0.25f),
+                        timeSelectorUnselectedContainerColor = c.textPrimary.copy(alpha = 0.06f),
+                        timeSelectorSelectedContentColor = c.textPrimary, timeSelectorUnselectedContentColor = c.textMuted,
+                        periodSelectorSelectedContainerColor = c.accent.copy(alpha = 0.25f),
+                        clockDialSelectedContentColor = c.onAccent, clockDialUnselectedContentColor = c.textSecondary,
+                    ))
+                    AccentButton({ pendingH = state.hour; pendingM = state.minute; step = 2 }, Modifier.fillMaxWidth(), icon = Icons.Rounded.Check, height = 50.dp)
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Done button
-                Button(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                        saveAndApply()
-                        onDismiss()
-                    },
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize()
-                            .background(Brush.horizontalGradient(listOf(CyanAccent, TealGlow)), RoundedCornerShape(14.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("Done", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = DeepNavy)
+                else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    availableRooms.forEach { (roomId, roomType, label) ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                                .clickable {
+                                    slots = (slots + ScheduleSlot(roomId, roomType, label, pendingH, pendingM)).sortedWith(compareBy({ it.hour }, { it.minute }))
+                                    step = 0
+                                }.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(if (roomType == "couple") Icons.Rounded.Favorite else Icons.Rounded.Group, null, tint = c.accent, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text(label, color = c.textPrimary, fontSize = 16.sp)
+                        }
                     }
                 }
             }
         }
-    }
-
-    // Time picker dialog
-    if (showTimePicker) {
-        val timePickerState = rememberTimePickerState(initialHour = pendingHour, initialMinute = pendingMinute)
-        AlertDialog(
-            onDismissRequest = { showTimePicker = false },
-            containerColor = CardSurface,
-            title = { Text("Select Time", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
-            text = {
-                TimePicker(state = timePickerState, colors = TimePickerDefaults.colors(
-                    clockDialColor = ElevatedSurface,
-                    selectorColor = ElectricViolet,
-                    timeSelectorSelectedContainerColor = ElectricViolet.copy(alpha = 0.2f),
-                    timeSelectorUnselectedContainerColor = ElevatedSurface,
-                    timeSelectorSelectedContentColor = TextPrimary,
-                    timeSelectorUnselectedContentColor = TextMuted
-                ))
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingHour = timePickerState.hour
-                    pendingMinute = timePickerState.minute
-                    showTimePicker = false
-                    showRoomPicker = true
-                }) { Text("Next", color = CyanAccent) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTimePicker = false }) { Text("Cancel", color = TextMuted) }
-            }
-        )
-    }
-
-    // Room picker dialog
-    if (showRoomPicker) {
-        AlertDialog(
-            onDismissRequest = { showRoomPicker = false },
-            containerColor = CardSurface,
-            title = { Text("Select Canvas", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    availableRooms.forEach { (roomId, roomType, label) ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(ElevatedSurface)
-                                .clickable {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    slots = (slots + ScheduleSlot(roomId, roomType, label, pendingHour, pendingMinute))
-                                        .sortedWith(compareBy({ it.hour }, { it.minute }))
-                                    showRoomPicker = false
-                                }
-                                .padding(horizontal = 16.dp, vertical = 12.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    if (roomType == "couple") "❤️" else "👥",
-                                    fontSize = 16.sp
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(label, fontSize = 14.sp, color = TextPrimary, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showRoomPicker = false }) { Text("Cancel", color = TextMuted) }
-            }
-        )
     }
 }
 
