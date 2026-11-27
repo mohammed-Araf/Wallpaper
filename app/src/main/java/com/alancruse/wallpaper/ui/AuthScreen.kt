@@ -26,9 +26,7 @@ fun AuthScreen(onSignInClick: () -> Unit) {
         AmbientBackground()
         Column(Modifier.fillMaxSize().padding(24.dp).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.weight(1f))
-            Box(Modifier.scale(breathe).size(120.dp).glass(RoundedCornerShape(38.dp)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Draw, null, tint = c.accent, modifier = Modifier.size(58.dp))
-            }
+            AppLogo(124.dp, Modifier.scale(breathe))
             Spacer(Modifier.height(28.dp))
             Text("WallPaper", color = c.textPrimary, fontSize = 36.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
             Spacer(Modifier.weight(1.2f))

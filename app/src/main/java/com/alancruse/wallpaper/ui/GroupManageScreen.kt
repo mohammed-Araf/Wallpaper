@@ -38,6 +38,7 @@ fun GroupManageScreen(currentUid: String, groupId: String, onBack: () -> Unit) {
     var toRemove by remember { mutableStateOf<GroupManager.MemberInfo?>(null) }
     var toBlock by remember { mutableStateOf<GroupManager.MemberInfo?>(null) }
     var expanded by remember { mutableStateOf<String?>(null) }
+    var showQr by remember { mutableStateOf(false) }
     val isOwner = info?.ownerId == currentUid
 
     fun refresh() { gm.getGroupDetails(groupId) { i, m -> info = i; members = m; loading = false } }
@@ -48,13 +49,17 @@ fun GroupManageScreen(currentUid: String, groupId: String, onBack: () -> Unit) {
         Column(Modifier.fillMaxSize()) {
             GlassTopBar(info?.name ?: "", onBack)
             info?.let { g ->
-                Row(
+                Column(
                     Modifier.padding(horizontal = 16.dp).fillMaxWidth().glass(RoundedCornerShape(26.dp)).padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    CodeChips(g.joinCode, small = true)
-                    Spacer(Modifier.weight(1f))
-                    BareIconButton(Icons.Rounded.ContentCopy, { clipboard.setText(AnnotatedString(g.joinCode)) }, contentDescription = "Copy")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CodeChips(g.joinCode, small = true)
+                        Spacer(Modifier.weight(1f))
+                        BareIconButton(Icons.Rounded.QrCode2, { showQr = !showQr }, active = showQr, contentDescription = "QR")
+                        BareIconButton(Icons.Rounded.ContentCopy, { clipboard.setText(AnnotatedString(g.joinCode)) }, contentDescription = "Copy")
+                    }
+                    AnimatedVisibility(showQr) { QrCode(QrPayload.group(g.joinCode), Modifier.padding(top = 14.dp), size = 180.dp) }
                 }
             }
             Spacer(Modifier.height(14.dp))

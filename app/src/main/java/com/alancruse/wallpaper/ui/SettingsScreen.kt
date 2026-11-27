@@ -46,6 +46,7 @@ fun SettingsScreen(
     onSchedule: () -> Unit,
     onApplyWallpaper: () -> Unit,
     onClearLockscreen: () -> Unit,
+    onPermissions: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -142,7 +143,7 @@ fun SettingsScreen(
                 SectionLabel("System")
                 GlassGroup {
                     SettingRow(Icons.Rounded.Notifications, Tints.Red, "Permissions") {
-                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
+                        onPermissions()
                     }
                     SettingRow(Icons.Rounded.CleaningServices, Tints.Gray, "Clear previews") {
                         CanvasRenderer.thumbFile(context, "x").parentFile?.listFiles()?.forEach { it.delete() }

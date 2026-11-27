@@ -48,6 +48,15 @@ fun GroupScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var created by remember { mutableStateOf<Pair<String, String>?>(null) } // groupId, code
 
+    fun join(jc: String) {
+        busy = true; error = null
+        gm.joinGroup(jc, displayName) { ok, gid, _, err ->
+            busy = false
+            if (ok && gid != null) { haptic(Haptic.Confirm); onGroupJoined(gid, "group_$gid") }
+            else { error = err ?: "Failed"; haptic(Haptic.Reject) }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         AmbientBackground()
         Column(Modifier.fillMaxSize().imePadding()) {
@@ -75,6 +84,7 @@ fun GroupScreen(
                             Modifier.fillMaxWidth().glass(RoundedCornerShape(28.dp)).padding(18.dp),
                             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
+                            QrCode(QrPayload.group(cr.second), size = 180.dp)
                             CodeChips(cr.second)
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 GlassIconButton(Icons.Rounded.ContentCopy, { clipboard.setText(AnnotatedString(cr.second)) }, contentDescription = "Copy")
@@ -93,13 +103,15 @@ fun GroupScreen(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
                     textStyle = TextStyle(fontSize = 20.sp, letterSpacing = 6.sp, fontWeight = FontWeight.SemiBold),
                     trailing = {
-                        SendButton(enabled = code.length == 6 && !busy, busy = false) {
-                            busy = true; error = null
-                            gm.joinGroup(code, displayName) { ok, gid, _, err ->
-                                busy = false
-                                if (ok && gid != null) { haptic(Haptic.Confirm); onGroupJoined(gid, "group_$gid") }
-                                else { error = err ?: "Failed"; haptic(Haptic.Reject) }
-                            }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            BareIconButton(Icons.Rounded.QrCodeScanner, {
+                                scanQr(context) { raw ->
+                                    if (raw == null) return@scanQr
+                                    val jc = QrPayload.parse(raw, "group")?.uppercase()
+                                    if (jc == null) { error = "Not a group code"; haptic(Haptic.Reject) } else { code = jc; join(jc) }
+                                }
+                            }, size = 46.dp, contentDescription = "Scan")
+                            SendButton(enabled = code.length == 6 && !busy, busy = busy) { join(code) }
                         }
                     }
                 )

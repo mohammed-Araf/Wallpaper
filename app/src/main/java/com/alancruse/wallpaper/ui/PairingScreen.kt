@@ -1,19 +1,26 @@
 package com.alancruse.wallpaper.ui
 
+import android.content.Intent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -30,8 +37,11 @@ fun PairingScreen(
     onPairedSuccess: (String) -> Unit,
     onSkipToGroups: () -> Unit = {},
     onBack: (() -> Unit)? = null,
+    onDeveloperBypass: (() -> Unit)? = null,
 ) {
     val c = LocalWallpaperColors.current
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val haptic = rememberHaptics()
     val pm = remember { PairingManager(currentUid) }
     var pin by remember { mutableStateOf<String?>(null) }
@@ -40,7 +50,30 @@ fun PairingScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var waiting by remember { mutableStateOf(false) }
 
+    fun claim(code: String) {
+        busy = true; error = null
+        pm.claimPairingCode(code) { ok, partner, msg ->
+            busy = false
+            if (ok && partner != null) { haptic(Haptic.Confirm); waiting = false; onPairedSuccess(partner) }
+            else { error = msg ?: "Invalid code"; haptic(Haptic.Reject) }
+        }
+    }
+
+    fun scan() = scanQr(context) { raw ->
+        if (raw == null) return@scanQr
+        val code = QrPayload.parse(raw, "pair")?.takeIf { it.all(Char::isDigit) }
+        if (code == null) { error = "Not a pairing code"; haptic(Haptic.Reject) }
+        else if (code == pin) { error = "That's your code"; haptic(Haptic.Reject) }
+        else { input = code; claim(code) }
+    }
+
     DisposableEffect(pm) { onDispose { pm.cleanup() } }
+    LaunchedEffect(Unit) {
+        pm.generatePairingCode(
+            onCodeGenerated = { pin = it; waiting = true },
+            onPartnerLinked = { haptic(Haptic.Confirm); waiting = false; onPairedSuccess(it) }
+        )
+    }
     LaunchedEffect(waiting) {
         while (waiting) {
             delay(2000)
@@ -52,52 +85,53 @@ fun PairingScreen(
     Box(Modifier.fillMaxSize()) {
         AmbientBackground()
         Column(Modifier.fillMaxSize().imePadding()) {
-            GlassTopBar(null, onBack)
+            GlassTopBar(null, onBack) {
+                if (onDeveloperBypass != null) BareIconButton(Icons.Rounded.DeveloperMode, onDeveloperBypass, tint = c.accent, contentDescription = "Developer")
+            }
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = if (onBack == null) 40.dp else 8.dp),
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Icon(Icons.Rounded.Favorite, null, tint = c.accent, modifier = Modifier.size(56.dp))
-                Spacer(Modifier.height(8.dp))
-
-                AnimatedContent(pin, label = "pin") { p ->
-                    if (p == null) AccentButton({
-                        pm.generatePairingCode(
-                            onCodeGenerated = { pin = it; waiting = true },
-                            onPartnerLinked = { haptic(Haptic.Confirm); waiting = false; onPairedSuccess(it) }
-                        )
-                    }, Modifier.fillMaxWidth(), text = "My code", icon = Icons.Rounded.QrCode2)
-                    else Column(
-                        Modifier.fillMaxWidth().glass(RoundedCornerShape(28.dp)).padding(18.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CodeChips(p)
+                // My code
+                Column(
+                    Modifier.fillMaxWidth().glass(RoundedCornerShape(30.dp)).padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    AnimatedContent(pin, label = "pin") { p ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            if (p == null) Box(Modifier.size(196.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp)
+                            } else {
+                                QrCode(QrPayload.pair(p), size = 196.dp)
+                                CodeChips(p)
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (waiting) Icon(Icons.Rounded.Sync, null, tint = c.accent, modifier = Modifier.size(20.dp).alpha(pulse))
+                        pin?.let { p ->
+                            BareIconButton(Icons.Rounded.ContentCopy, { clipboard.setText(AnnotatedString(p)) }, size = 40.dp, contentDescription = "Copy")
+                            BareIconButton(Icons.Rounded.IosShare, {
+                                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, p) }, null))
+                            }, size = 40.dp, contentDescription = "Share")
+                        }
                     }
                 }
 
+                // Partner's code
+                AccentButton(::scan, Modifier.fillMaxWidth(), text = "Scan", icon = Icons.Rounded.QrCodeScanner, loading = busy)
                 GlassTextField(
                     input, { if (it.length <= 6 && it.all(Char::isDigit)) input = it }, "Partner's code",
                     leadingIcon = Icons.Rounded.Link,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     textStyle = TextStyle(fontSize = 20.sp, letterSpacing = 6.sp, fontWeight = FontWeight.SemiBold),
-                    trailing = {
-                        SendButton(input.length == 6 && !busy, busy) {
-                            busy = true; error = null
-                            pm.claimPairingCode(input) { ok, partner, msg ->
-                                busy = false
-                                if (ok && partner != null) { haptic(Haptic.Confirm); onPairedSuccess(partner) }
-                                else { error = msg ?: "Invalid code"; haptic(Haptic.Reject) }
-                            }
-                        }
-                    }
+                    trailing = { SendButton(input.length == 6 && !busy, busy) { claim(input) } }
                 )
                 AnimatedVisibility(error != null) {
                     Text(error ?: "", color = ErrorRed, fontSize = 14.sp)
                 }
 
                 if (onBack == null) {
-                    Spacer(Modifier.height(12.dp))
                     Row(
                         Modifier.glass(RoundedCornerShape(50)).padding(start = 18.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
