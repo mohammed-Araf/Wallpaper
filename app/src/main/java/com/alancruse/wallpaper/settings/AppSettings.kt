@@ -57,6 +57,8 @@ class AppSettings private constructor(context: Context) {
 
     private val _smooth = bool("smooth_strokes", true)
     var smoothStrokes: Boolean get() = _smooth.value; set(v) { _smooth.value = v; save("smooth_strokes", v) }
+    private val _shapeSnap = bool("shape_snap", true)
+    var shapeSnap: Boolean get() = _shapeSnap.value; set(v) { _shapeSnap.value = v; save("shape_snap", v) }
 
     private val _twoTap = bool("two_finger_undo", true)
     var twoFingerUndo: Boolean get() = _twoTap.value; set(v) { _twoTap.value = v; save("two_finger_undo", v) }

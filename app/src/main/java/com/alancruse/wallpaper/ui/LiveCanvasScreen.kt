@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -65,6 +66,17 @@ import com.alancruse.wallpaper.ui.theme.*
 import com.alancruse.wallpaper.wallpaper.CanvasRenderer
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
+import com.alancruse.wallpaper.canvas.ShapeSnap
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+import com.google.firebase.auth.FirebaseAuth
+import com.alancruse.wallpaper.live.LiveBoard
+import com.alancruse.wallpaper.live.LiveTracker
+import com.alancruse.wallpaper.live.StickerKinds
+import com.alancruse.wallpaper.wallpaper.StickerArt
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -75,7 +87,12 @@ import kotlin.math.sqrt
 
 private enum class Tool { MOVE, PEN, ERASER, TEXT }
 private enum class ElType { STICKER, TEXT, IMAGE }
-private data class TextEdit(val canvasX: Float, val canvasY: Float, val index: Int?, val value: String)
+private data class TextEdit(
+    val canvasX: Float, val canvasY: Float, val index: Int?, val value: String,
+    val style: Int = 0, val font: Int = 0, val color: Int? = null,
+)
+
+private fun TextEdit(t: TextElement, index: Int) = TextEdit(t.x, t.y, index, t.text, t.style, t.font, t.colorArgb)
 
 private val PenColors = listOf(
     Color.White, Color(0xFF1C1C1E), Color(0xFFFF453A), Color(0xFFFF9F0A), Color(0xFFFFD60A),
@@ -165,6 +182,34 @@ fun LiveCanvasScreen(
     fun toCanvas(o: Offset) = (o - viewOffset) / viewScale
     fun visibleCenter() = toCanvas(Offset(screenW / 2f, screenH / 2.4f))
 
+    // Animated / live stickers: frame clock only while some are on the canvas.
+    var frameMs by remember { mutableLongStateOf(0L) }
+    val hasLive = sync.sharedStickers.any { it.kind.isNotEmpty() }
+    LaunchedEffect(hasLive) { if (hasLive) while (true) withFrameMillis { frameMs = it } }
+    val liveWatcher = remember(sync) { LiveBoard.Watcher(sync.roomId) }
+    LaunchedEffect(sync) { snapshotFlow { sync.sharedStickers.toList() }.collect { liveWatcher.update(it) } }
+    DisposableEffect(sync) { onDispose { liveWatcher.close() } }
+
+    // Permissions are asked when a live sticker is placed, not up front.
+    var pendingKind by remember { mutableStateOf<String?>(null) }
+    val bgLocLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { LiveTracker.refresh() }
+    fun maybeBackground(k: String) {
+        if (StickerKinds.needsLocation(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) bgLocLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    }
+    val livePermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        LiveTracker.refresh(); pendingKind?.let { maybeBackground(it) }; pendingKind = null
+    }
+    fun requestLivePerms(k: String) {
+        val perms = buildList {
+            if (StickerKinds.needsSteps(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
+            if (StickerKinds.needsLocation(k)) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
+        }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+        if (perms.isNotEmpty()) { pendingKind = k; livePermLauncher.launch(perms.toTypedArray()) } else { maybeBackground(k); LiveTracker.refresh() }
+    }
+
     // Decode images off the main thread, then redraw
     LaunchedEffect(sync) {
         snapshotFlow { sync.sharedImages.map { it.imageBase64 } }.collect { list ->
@@ -201,11 +246,15 @@ fun LiveCanvasScreen(
     fun commitText() {
         val e = editing ?: return
         val txt = e.value.trimEnd()
+        val col = e.color ?: penColor.copy(alpha = penAlpha).toArgb()
         if (e.index != null && e.index in sync.sharedTexts.indices) {
-            if (txt.isBlank()) sync.deleteText(e.index) else sync.updateText(e.index, sync.sharedTexts[e.index].copy(text = txt))
+            if (txt.isBlank()) sync.deleteText(e.index)
+            else sync.updateText(e.index, sync.sharedTexts[e.index].copy(text = txt, style = e.style, font = e.font, colorArgb = col))
         } else if (txt.isNotBlank()) {
-            sync.pushText(TextElement(text = txt, x = e.canvasX, y = e.canvasY, colorArgb = penColor.copy(alpha = penAlpha).toArgb(), fontSize = textSize))
+            sync.pushText(TextElement(text = txt, x = e.canvasX, y = e.canvasY, colorArgb = col, fontSize = textSize, style = e.style, font = e.font))
             haptic(Haptic.Confirm)
+            // Like a story: once the text is placed, the next touch moves it.
+            tool = Tool.MOVE; trayOpen = false
         }
         editing = null
         keyboard?.hide()
@@ -224,14 +273,18 @@ fun LiveCanvasScreen(
             val size = s.size * s.scale
             val l = local(s.x, s.y, s.rotation)
             val dx = l.x; val dy = l.y + size * 0.35f
-            if (sqrt(dx * dx + dy * dy) < size * 0.6f + slack) take(ElType.STICKER, i, s.timestamp)
+            if (s.kind.isNotEmpty()) {
+                val (hw, hh) = StickerArt.halfSize(s.kind); val u = size / 100f
+                if (abs(dx) < hw * u + slack && abs(dy) < hh * u + slack) take(ElType.STICKER, i, s.timestamp)
+            } else if (sqrt(dx * dx + dy * dy) < size * 0.6f + slack) take(ElType.STICKER, i, s.timestamp)
         }
         sync.sharedTexts.forEachIndexed { i, t ->
             val paint = CanvasRenderer.textPaintFor(t)
             val lines = t.text.split('\n')
             val w = lines.maxOf { paint.measureText(it) }
             val l = local(t.x, t.y, t.rotation)
-            if (l.x in -slack..(w + slack) && l.y in (-paint.textSize - slack)..(paint.textSize * 1.2f * (lines.size - 1) + paint.textSize * 0.3f + slack))
+            val sl = slack + CanvasRenderer.textPad(t)
+            if (l.x in -sl..(w + sl) && l.y in (-paint.textSize - sl)..(paint.textSize * 1.2f * (lines.size - 1) + paint.textSize * 0.3f + sl))
                 take(ElType.TEXT, i, t.timestamp)
         }
         sync.sharedImages.forEachIndexed { i, img ->
@@ -330,8 +383,23 @@ fun LiveCanvasScreen(
                         var threeStart: Offset? = null
                         var threeTravel = Offset.Zero
 
+                        // Draw-and-hold shape cleanup
+                        var holdAnchor = down.position
+                        var holdSince = t0
+                        var snapped = false
+                        var snapTried = false
+
                         while (true) {
-                            val ev = awaitPointerEvent()
+                            val holdable = activeTool == Tool.PEN && canEdit && settings.shapeSnap && !snapped && !snapTried && maxPtr == 1 && livePoints.size > 3
+                            val ev = if (holdable) withTimeoutOrNull(90L) { awaitPointerEvent() } else awaitPointerEvent()
+                            if (ev == null) {
+                                if (android.os.SystemClock.uptimeMillis() - holdSince > 520) {
+                                    val clean = ShapeSnap.snap(livePoints)
+                                    if (clean != null) { livePoints.clear(); livePoints.addAll(clean); snapped = true; haptic(Haptic.Confirm); redraw++ }
+                                    else snapTried = true
+                                }
+                                continue
+                            }
                             tEnd = ev.changes.maxOf { it.uptimeMillis }
                             val pressed = ev.changes.filter { it.pressed }
                             if (pressed.isEmpty()) break
@@ -343,7 +411,8 @@ fun LiveCanvasScreen(
                                 travel += d.getDistance(); lastPos = ch.position
                                 val cp = toCanvas(ch.position)
                                 when (activeTool) {
-                                    Tool.PEN -> if (canEdit && livePoints.isNotEmpty()) {
+                                    Tool.PEN -> if (canEdit && livePoints.isNotEmpty() && !snapped) {
+                                        if ((ch.position - holdAnchor).getDistance() > 7f) { holdAnchor = ch.position; holdSince = ch.uptimeMillis; snapTried = false }
                                         val lp = livePoints.last()
                                         val dx = cp.x - lp.x; val dy = cp.y - lp.y
                                         if (dx * dx + dy * dy > (1.5f / viewScale).let { it * it }) { livePoints.add(cp.toPoint()); redraw++ }
@@ -373,7 +442,7 @@ fun LiveCanvasScreen(
                             val centroid = Offset(pressed.map { it.position.x }.average().toFloat(), pressed.map { it.position.y }.average().toFloat())
                             if (!multi) {
                                 multi = true
-                                livePoints.clear(); eraserPos = null; redraw++
+                                livePoints.clear(); eraserPos = null; overBin = false; redraw++
                                 // Two fingers on an item grab it in any tool (Instagram-story style).
                                 if (canEdit && grabbed == null && pressed.size == 2) {
                                     grabbed = hitTest(toCanvas(centroid))
@@ -398,7 +467,6 @@ fun LiveCanvasScreen(
                                     val g = grabbed
                                     if (g != null) {
                                         transformEl(g, pan / viewScale, sf, rot)
-                                        updateBin(centroid.y)
                                     } else if (settings.pinchZoom) {
                                         val ns = (viewScale * sf).coerceIn(0.4f, 5f)
                                         viewOffset = centroid - (centroid - viewOffset) * (ns / viewScale) + pan
@@ -431,8 +499,11 @@ fun LiveCanvasScreen(
                                     if (g != null) {
                                         if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
                                         else if (!draggingEl && g.first == ElType.TEXT) {
-                                            sync.sharedTexts.getOrNull(g.second)?.let { t ->
-                                                editing = TextEdit(t.x, t.y, g.second, t.text)
+                                            sync.sharedTexts.getOrNull(g.second)?.let { t -> editing = TextEdit(t, g.second) }
+                                        } else if (!draggingEl && g.first == ElType.IMAGE) {
+                                            sync.sharedImages.getOrNull(g.second)?.let { img ->
+                                                sync.updateImage(g.second, img.copy(style = (img.style + 1).mod(CanvasRenderer.IMAGE_STYLES)))
+                                                haptic(Haptic.Tick); redraw++
                                             }
                                         }
                                     } else if (activeTool == Tool.TEXT && canEdit && isTap) {
@@ -440,8 +511,6 @@ fun LiveCanvasScreen(
                                     }
                                 }
                             }
-                        } else if (grabbed != null && draggingEl && overBin) {
-                            deleteEl(grabbed!!); haptic(Haptic.Reject)
                         } else {
                             val tap2 = maxPtr == 2 && duration < 320 && multiTravel < 30f && abs(multiScale - 1f) < 0.08f
                             if (tap2 && settings.twoFingerUndo && canEdit && grabbed == null) {
@@ -459,13 +528,16 @@ fun LiveCanvasScreen(
                 }
         ) {
             redraw // subscribe
+            frameMs; LiveBoard.version.intValue
             val nc = drawContext.canvas.nativeCanvas
             nc.save()
             nc.translate(viewOffset.x, viewOffset.y)
             nc.scale(viewScale, viewScale)
             CanvasRenderer.drawOnCanvas(
-                nc, null, sync.sharedStrokes, sync.sharedStickers, sync.sharedTexts, sync.sharedImages,
-                strokePaths = sync.strokePaths, decode = false
+                nc, null, sync.sharedStrokes, sync.sharedStickers,
+                editing?.index?.let { ei -> sync.sharedTexts.mapIndexed { i, t -> if (i == ei) t.copy(text = "") else t } } ?: sync.sharedTexts,
+                sync.sharedImages,
+                strokePaths = sync.strokePaths, decode = false, timeMs = frameMs, roomId = sync.roomId
             )
             if (livePoints.isNotEmpty()) {
                 livePaint.color = penColor.copy(alpha = penAlpha).toArgb()
@@ -496,16 +568,23 @@ fun LiveCanvasScreen(
             val fontPx = (if (e.index != null) sync.sharedTexts.getOrNull(e.index)?.let { it.fontSize * it.scale } else null) ?: textSize
             val sx = e.canvasX * viewScale + viewOffset.x
             val sy = e.canvasY * viewScale + viewOffset.y - fontPx * viewScale
-            val color = if (e.index != null) sync.sharedTexts.getOrNull(e.index)?.let { Color(it.colorArgb) } ?: penColor else penColor.copy(alpha = penAlpha)
+            val colArgb = e.color ?: penColor.copy(alpha = penAlpha).toArgb()
+            val look = textLook(e.style, colArgb, fontPx * viewScale, density)
             BasicTextField(
                 value = e.value,
                 onValueChange = { editing = e.copy(value = it) },
-                textStyle = TextStyle(color = color, fontSize = with(density) { (fontPx * viewScale).toSp() }, fontWeight = FontWeight.Medium),
+                textStyle = TextStyle(
+                    color = look.fg, fontSize = with(density) { (fontPx * viewScale).toSp() },
+                    fontFamily = fontFamilyFor(e.font), shadow = look.shadow,
+                ),
                 cursorBrush = SolidColor(c.accent),
                 modifier = Modifier.offset { IntOffset(sx.toInt(), sy.toInt()) }
                     .widthIn(min = 40.dp, max = 320.dp)
-                    .border(1.dp, c.accent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 4.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(look.bg)
+                    .border(1.dp, c.accent.copy(alpha = if (look.bg == Color.Transparent) 0.6f else 0f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .animateContentSize(Motion.snappy())
                     .focusRequester(fr)
             )
             LaunchedEffect(e.index, e.canvasX, e.canvasY) { fr.requestFocus(); keyboard?.show() }
@@ -610,7 +689,7 @@ fun LiveCanvasScreen(
                     }
                 }
 
-                AnimatedVisibility(chrome && !draggingEl, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
+                AnimatedVisibility(chrome && !draggingEl && editing == null, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
                     Row(
                         Modifier.glass(CircleShape, strong = true).padding(5.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically
@@ -627,6 +706,50 @@ fun LiveCanvasScreen(
                         BareIconButton(Icons.Rounded.AddReaction, { if (editing != null) commitText(); showStickers = true }, size = 48.dp, contentDescription = "Sticker")
                         BareIconButton(Icons.Rounded.AddPhotoAlternate, { if (editing != null) commitText(); imagePicker.launch("image/*") }, size = 48.dp, contentDescription = "Image")
                     }
+                }
+            }
+
+            // Story-style text toolbar, floating above the keyboard
+            AnimatedVisibility(
+                editing != null, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding().padding(bottom = 10.dp),
+                enter = fadeIn() + slideInVertically(Motion.bouncy()) { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                val e = editing
+                if (e != null) Column(
+                    Modifier.padding(horizontal = 12.dp).widthIn(max = 460.dp).glass(RoundedCornerShape(28.dp), strong = true).padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val colArgb = e.color ?: penColor.copy(alpha = penAlpha).toArgb()
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Look: cycles plain → shadow → label → dark label → outline
+                        val look = textLook(e.style, colArgb, with(density) { 18.sp.toPx() }, density)
+                        val src1 = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier.pressScale(src1).size(44.dp).clip(RoundedCornerShape(14.dp)).background(c.textPrimary.copy(alpha = 0.08f))
+                                .clickable(src1, null) { haptic(Haptic.Tick); editing = e.copy(style = (e.style + 1).mod(CanvasRenderer.TEXT_STYLES)) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AnimatedContent(e.style, transitionSpec = { (scaleIn(Motion.bouncy()) + fadeIn()) togetherWith (scaleOut() + fadeOut()) }, label = "look") { _ ->
+                                Text("A", color = look.fg, fontSize = 18.sp, fontWeight = FontWeight.Bold, style = TextStyle(shadow = look.shadow),
+                                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(look.bg).padding(horizontal = 6.dp))
+                            }
+                        }
+                        // Font: cycles typefaces
+                        val src2 = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier.pressScale(src2).height(44.dp).widthIn(min = 56.dp).clip(RoundedCornerShape(14.dp)).background(c.textPrimary.copy(alpha = 0.08f))
+                                .clickable(src2, null) { haptic(Haptic.Tick); editing = e.copy(font = (e.font + 1).mod(CanvasRenderer.TEXT_FONTS)) }
+                                .padding(horizontal = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AnimatedContent(e.font, transitionSpec = { (slideInVertically(Motion.bouncy()) { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut()) }, label = "font") { f ->
+                                Text("Aa", color = c.textPrimary, fontSize = 18.sp, fontFamily = fontFamilyFor(f))
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        BareIconButton(Icons.Rounded.Check, { commitText() }, active = true, size = 44.dp, contentDescription = "Done")
+                    }
+                    ColorRow(Color(colArgb).copy(alpha = 1f)) { editing = e.copy(color = it.toArgb()); haptic(Haptic.Tick) }
                 }
             }
 
@@ -648,34 +771,59 @@ fun LiveCanvasScreen(
 
             // ═════════ Sheets ═════════
             GlassSheet(showStickers, { showStickers = false; dragEmoji = null }) {
-                LazyVerticalGrid(
-                    GridCells.Fixed(8), Modifier.fillMaxWidth().heightIn(max = 300.dp).alpha(if (dragEmoji != null) 0.15f else 1f),
-                    contentPadding = PaddingValues(bottom = 8.dp)
-                ) {
-                    items(Emojis) { e ->
-                        var cellPos by remember { mutableStateOf(Offset.Zero) }
-                        Box(
-                            Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp))
-                                .onGloballyPositioned { cellPos = it.positionInRoot() }
-                                .pointerInput(e) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { o -> dragEmoji = e; dragEmojiPos = cellPos + o; haptic(Haptic.Tick) },
-                                        onDrag = { ch, amt -> ch.consume(); dragEmojiPos += amt },
-                                        onDragEnd = {
-                                            val p = toCanvas(dragEmojiPos)
-                                            sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y + 30f, size = 110f / viewScale))
-                                            haptic(Haptic.Confirm); dragEmoji = null; showStickers = false; tool = Tool.MOVE
+                var tab by remember { mutableIntStateOf(0) }
+                GlassSegmented(
+                    listOf(Icons.Rounded.EmojiEmotions to null, Icons.Rounded.AutoAwesome to null, Icons.Rounded.Sensors to null),
+                    tab, onSelect = { tab = it }, modifier = Modifier.padding(bottom = 12.dp)
+                )
+                AnimatedContent(
+                    tab, label = "stickerTab",
+                    transitionSpec = { (fadeIn() + slideInHorizontally(Motion.snappy()) { if (targetState > initialState) it / 5 else -it / 5 }) togetherWith fadeOut() }
+                ) { t ->
+                    when (t) {
+                        0 -> {
+                        LazyVerticalGrid(
+                            GridCells.Fixed(8), Modifier.fillMaxWidth().heightIn(max = 300.dp).alpha(if (dragEmoji != null) 0.15f else 1f),
+                            contentPadding = PaddingValues(bottom = 8.dp)
+                        ) {
+                            items(Emojis) { e ->
+                                var cellPos by remember { mutableStateOf(Offset.Zero) }
+                                Box(
+                                    Modifier.aspectRatio(1f).clip(RoundedCornerShape(12.dp))
+                                        .onGloballyPositioned { cellPos = it.positionInRoot() }
+                                        .pointerInput(e) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = { o -> dragEmoji = e; dragEmojiPos = cellPos + o; haptic(Haptic.Tick) },
+                                                onDrag = { ch, amt -> ch.consume(); dragEmojiPos += amt },
+                                                onDragEnd = {
+                                                    val p = toCanvas(dragEmojiPos)
+                                                    sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y + 30f, size = 110f / viewScale))
+                                                    haptic(Haptic.Confirm); dragEmoji = null; showStickers = false; tool = Tool.MOVE
+                                                },
+                                                onDragCancel = { dragEmoji = null }
+                                            )
+                                        }
+                                        .clickable {
+                                            val p = visibleCenter()
+                                            sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y, size = 110f / viewScale))
+                                            haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
                                         },
-                                        onDragCancel = { dragEmoji = null }
-                                    )
-                                }
-                                .clickable {
-                                    val p = visibleCenter()
-                                    sync.pushSticker(StickerElement(emoji = e, x = p.x, y = p.y, size = 110f / viewScale))
-                                    haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
-                                },
-                            contentAlignment = Alignment.Center
-                        ) { Text(e, fontSize = 26.sp) }
+                                    contentAlignment = Alignment.Center
+                                ) { Text(e, fontSize = 26.sp) }
+                            }
+                        }
+                        }
+                        else -> StickerMarket(if (t == 1) StickerKinds.animated else StickerKinds.widgets, if (t == 1) 4 else 2) { k ->
+                            val p = visibleCenter()
+                            val widget = StickerKinds.isWidget(k)
+                            sync.pushSticker(StickerElement(
+                                emoji = FallbackEmoji[k] ?: "✨", kind = k,
+                                owner = if (widget) FirebaseAuth.getInstance().currentUser?.uid ?: "" else "",
+                                x = p.x, y = p.y, size = (if (widget) 170f else 140f) / viewScale
+                            ))
+                            haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
+                            if (widget) requestLivePerms(k)
+                        }
                     }
                 }
             }
@@ -768,6 +916,62 @@ private fun SizeDots(steps: List<Float>, value: Float, color: Color, icon: Image
                     .clickable { haptic(Haptic.Tick); onPick(w) },
                 contentAlignment = Alignment.Center
             ) { Box(Modifier.size((6 + i * 5).dp).clip(CircleShape).background(if (sel) color else c.textMuted)) }
+        }
+    }
+}
+
+private data class TextLook(val fg: Color, val bg: Color, val shadow: androidx.compose.ui.graphics.Shadow?)
+
+/** Compose preview of the renderer's text looks (see CanvasRenderer.drawText). */
+private fun textLook(style: Int, argb: Int, sizePx: Float, density: androidx.compose.ui.unit.Density): TextLook {
+    val col = Color(argb)
+    val contrast = Color(CanvasRenderer.contrastOn(argb))
+    return when (style.mod(CanvasRenderer.TEXT_STYLES)) {
+        1 -> TextLook(col, Color.Transparent, androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.66f), Offset(0f, sizePx * 0.06f), sizePx * 0.14f))
+        2 -> TextLook(contrast, col, null)
+        3 -> TextLook(col, Color.Black.copy(alpha = 0.55f), null)
+        4 -> TextLook(col, Color.Transparent, androidx.compose.ui.graphics.Shadow(contrast, Offset.Zero, sizePx * 0.08f))
+        else -> TextLook(col, Color.Transparent, null)
+    }
+}
+
+private val fontFamilies = HashMap<Int, androidx.compose.ui.text.font.FontFamily>()
+private fun fontFamilyFor(font: Int) = fontFamilies.getOrPut(font.mod(CanvasRenderer.TEXT_FONTS)) {
+    androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Typeface(CanvasRenderer.typeface(font)))
+}
+
+/** Shown by older app versions that don't know animated / live stickers. */
+private val FallbackEmoji = mapOf(
+    "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
+    "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
+    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆",
+)
+
+/** Grid of animated / live stickers, each previewed live with sample data. */
+@Composable
+private fun StickerMarket(kinds: List<String>, columns: Int, onPick: (String) -> Unit) {
+    val c = LocalWallpaperColors.current
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    LazyVerticalGrid(
+        GridCells.Fixed(columns), Modifier.fillMaxWidth().heightIn(max = 380.dp),
+        contentPadding = PaddingValues(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        itemsIndexed(kinds) { i, k ->
+            val src = remember { MutableInteractionSource() }
+            Box(
+                Modifier.enterAnim(i).aspectRatio(if (StickerKinds.isWidget(k)) 1.45f else 1f).pressScale(src, 0.9f)
+                    .clip(RoundedCornerShape(18.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                    .clickable(src, null) { onPick(k) }
+            ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val (hw, hh) = StickerArt.halfSize(k)
+                    val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
+                    val sz = u * 100f
+                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                    StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, StickerArt.Preview, "preview")
+                }
+            }
         }
     }
 }

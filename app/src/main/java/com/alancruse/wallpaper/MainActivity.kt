@@ -62,6 +62,8 @@ class MainActivity : ComponentActivity() {
     private var afterPermissions by mutableStateOf(AppState.HOME)
     private var permissionsFromSettings by mutableStateOf(false)
 
+    private var showIntro by mutableStateOf(false)
+
     private val isDeveloper get() = currentUser?.email.equals(DEVELOPER_EMAIL, ignoreCase = true)
 
     private val signInLauncher = registerForActivityResult(
@@ -92,6 +94,7 @@ class MainActivity : ComponentActivity() {
         googleAuthManager = GoogleAuthManager(this)
         pairingPrefs = PairingPrefs(this)
         currentUser = googleAuthManager.getCurrentUser()
+        showIntro = savedInstanceState == null
 
         val user = currentUser
         if (user == null) {
@@ -161,11 +164,21 @@ class MainActivity : ComponentActivity() {
                                 thumbVersion = thumbVersion,
                                 onOpenCanvas = { openCanvas(it.roomId) },
                                 onSetHome = {
-                                    pairingPrefs.setActiveWallpaper(it.roomId, it.roomType); refreshWallpaperIds()
+                                    pairingPrefs.setActiveWallpaper(it.roomId, it.roomType)
+                                    // Not applied yet: hand over to Android's picker (home / home + lock).
+                                    if (!isLiveWallpaperActive()) launchWallpaperPicker()
+                                    refreshWallpaperIds()
                                 },
                                 onSetLock = {
-                                    pairingPrefs.setLockscreenWallpaper(it.roomId, it.roomType); refreshWallpaperIds()
-                                    com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.start(this@MainActivity)
+                                    if (pairingPrefs.lockscreenRoomId == it.roomId) {
+                                        // Tapping the active lock canvas again stops syncing it.
+                                        pairingPrefs.clearLockscreenWallpaper()
+                                        com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.stop(this@MainActivity)
+                                    } else {
+                                        pairingPrefs.setLockscreenWallpaper(it.roomId, it.roomType)
+                                        com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.start(this@MainActivity)
+                                    }
+                                    refreshWallpaperIds()
                                 },
                                 onManageGroup = { managingGroupId = it; appState = AppState.GROUP_MANAGE },
                                 onLeaveGroup = { gid ->
@@ -177,7 +190,6 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onGroups = { appState = AppState.GROUP_SCREEN },
                                 onPair = { pairingFromApp = true; appState = AppState.NEEDS_PAIRING },
-                                onApplyWallpaper = { launchWallpaperPicker() },
                                 onSchedule = { showSchedule = true },
                                 onSettings = { appState = AppState.SETTINGS }
                             )
@@ -207,7 +219,6 @@ class MainActivity : ComponentActivity() {
                             AppState.SETTINGS -> SettingsScreen(
                                 currentUser = currentUser!!,
                                 isPaired = partnerUid != null,
-                                hasLockscreen = lockRoomId != null,
                                 onPair = { pairingFromApp = true; appState = AppState.NEEDS_PAIRING },
                                 onUnpair = {
                                     val uid = currentUser!!.uid
@@ -235,19 +246,15 @@ class MainActivity : ComponentActivity() {
                                     if (pUid != null && pUid != DEV_PARTNER_UID) PairingManager(uid).unpair(pUid) { doSignOut() } else doSignOut()
                                 },
                                 onSchedule = { showSchedule = true },
-                                onApplyWallpaper = { launchWallpaperPicker() },
                                 onPermissions = { permissionsFromSettings = true; appState = AppState.PERMISSIONS },
-                                onClearLockscreen = {
-                                    pairingPrefs.clearLockscreenWallpaper()
-                                    com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.stop(this@MainActivity)
-                                    refreshWallpaperIds()
-                                },
                                 onBack = { goHome() }
                             )
 
                             AppState.CANVAS -> {}
                         }
                     }
+
+                    if (showIntro) IntroOverlay(onFinished = { showIntro = false })
 
                     if (showSchedule) {
                         AutoSwitchDialog(
@@ -278,9 +285,16 @@ class MainActivity : ComponentActivity() {
         appState = AppState.HOME
     }
 
+    private fun isLiveWallpaperActive(): Boolean =
+        WallpaperManager.getInstance(this).wallpaperInfo?.packageName == packageName
+
+    /** Badges only show what is really on screen. */
     private fun refreshWallpaperIds() {
-        homeRoomId = pairingPrefs.getWallpaperRoomId()
-        lockRoomId = pairingPrefs.lockscreenRoomId
+        val live = isLiveWallpaperActive()
+        homeRoomId = if (live) pairingPrefs.getWallpaperRoomId() else null
+        lockRoomId = pairingPrefs.lockscreenRoomId ?: if (live && Build.VERSION.SDK_INT >= 34 &&
+            WallpaperManager.getInstance(this).getWallpaperInfo(WallpaperManager.FLAG_LOCK)?.packageName == packageName
+        ) homeRoomId else null
     }
 
     private fun rooms(): List<CanvasRoom> = buildList {
@@ -289,6 +303,9 @@ class MainActivity : ComponentActivity() {
         if (uid != null && p != null) add(CanvasRoom(if (uid < p) "${uid}_$p" else "${p}_$uid", "couple", if (p == DEV_PARTNER_UID) "Dev canvas" else "Partner"))
         groups.forEach { g -> add(CanvasRoom(g.roomId, "group", g.name, g.memberCount, g.joinCode, g.groupId)) }
     }
+
+    override fun onStart() { super.onStart(); com.alancruse.wallpaper.live.LiveTracker.acquire(this) }
+    override fun onStop() { com.alancruse.wallpaper.live.LiveTracker.release(); super.onStop() }
 
     override fun onResume() {
         super.onResume()

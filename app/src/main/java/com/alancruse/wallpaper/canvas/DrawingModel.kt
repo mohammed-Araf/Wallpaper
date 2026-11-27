@@ -28,6 +28,10 @@ data class StickerElement(
     val size: Float = 80f,
     val rotation: Float = 0f,
     val scale: Float = 1f,
+    /** "" = emoji · "a:*" = animated cartoon · "w:*" = live widget (see StickerKinds). */
+    val kind: String = "",
+    /** For stat widgets: whose numbers it shows. */
+    val owner: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -41,6 +45,10 @@ data class TextElement(
     val fontSize: Float = 48f,
     val rotation: Float = 0f,
     val scale: Float = 1f,
+    /** Look preset: 0 plain · 1 shadow · 2 solid label · 3 dark label · 4 outline. */
+    val style: Int = 0,
+    /** 0 sans · 1 serif · 2 handwriting · 3 mono · 4 condensed. */
+    val font: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -54,5 +62,7 @@ data class ImageElement(
     val height: Float = 300f,
     val rotation: Float = 0f,
     val scale: Float = 1f,
+    /** Frame preset: 0 plain · 1 rounded · 2 white border · 3 rounded + shadow · 4 circle. */
+    val style: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
 )

@@ -84,6 +84,7 @@ class CanvasSyncManager private constructor(val roomId: String) {
             val key = s.key ?: return
             val v = try { s.getValue(cls) } catch (e: Exception) { null } ?: return
             val idx = keys.indexOf(key)
+            if (idx < 0 && pendingKeys.contains(key)) return // deleted locally, server catching up
             if (idx >= 0) { list[idx] = v; onSet(idx, v) } else { keys.add(key); list.add(v); onAdd(list.lastIndex, v) }
             refreshUndo()
         }
@@ -230,9 +231,22 @@ class CanvasSyncManager private constructor(val roomId: String) {
         sharedImages[index] = img; queue(imagesRef.child(imageKeys[index]), imageKeys[index], img)
     }
 
-    fun deleteSticker(index: Int) { if (index in stickerKeys.indices) stickersRef.child(stickerKeys[index]).removeValue() }
-    fun deleteText(index: Int) { if (index in textKeys.indices) textsRef.child(textKeys[index]).removeValue() }
-    fun deleteImage(index: Int) { if (index in imageKeys.indices) imagesRef.child(imageKeys[index]).removeValue() }
+    /**
+     * Local-first delete. Drops any queued transform for the element first —
+     * otherwise a throttled move written after the delete would bring it back.
+     */
+    private fun <T> deleteAt(index: Int, ref: DatabaseReference, keys: ArrayList<String>, list: MutableList<T>) {
+        if (index !in keys.indices) return
+        val key = keys[index]
+        pendingWrites.remove(key)
+        keys.removeAt(index); list.removeAt(index)
+        ref.child(key).removeValue().addOnCompleteListener { pendingKeys.remove(key) }
+        refreshUndo()
+    }
+
+    fun deleteSticker(index: Int) = deleteAt(index, stickersRef, stickerKeys, sharedStickers)
+    fun deleteText(index: Int) = deleteAt(index, textsRef, textKeys, sharedTexts)
+    fun deleteImage(index: Int) = deleteAt(index, imagesRef, imageKeys, sharedImages)
 
     fun setBackgroundColor(argb: Int) { sharedBackgroundColor.intValue = argb; bgColorRef.setValue(argb) }
 

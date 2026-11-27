@@ -51,6 +51,13 @@ object AppPermissions {
     fun battery(ctx: Context) = (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(ctx.packageName)
 
     fun allGranted(ctx: Context) = notifications(ctx) && exactAlarms(ctx) && battery(ctx)
+
+    private fun granted(ctx: Context, p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
+    fun activity(ctx: Context) = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || granted(ctx, Manifest.permission.ACTIVITY_RECOGNITION)
+    fun locationForeground(ctx: Context) = granted(ctx, Manifest.permission.ACCESS_COARSE_LOCATION)
+    /** "All the time" — needed so the wallpaper can update distance while the app is closed. */
+    fun location(ctx: Context) = locationForeground(ctx) &&
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION))
 }
 
 @SuppressLint("BatteryLife")
@@ -60,6 +67,7 @@ fun PermissionsScreen(onDone: () -> Unit, onBack: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     var tick by remember { mutableIntStateOf(0) }
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
+    val multiLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { tick++; com.alancruse.wallpaper.live.LiveTracker.refresh() }
 
     fun open(intent: Intent) {
         try { ctx.startActivity(intent) } catch (_: Exception) {
@@ -82,6 +90,16 @@ fun PermissionsScreen(onDone: () -> Unit, onBack: (() -> Unit)? = null) {
             )
             add(Perm(Icons.Rounded.BatteryChargingFull, Tints.Green, "Background sync", AppPermissions::battery) {
                 open(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg))
+            })
+            // Optional — only used by live stickers
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(
+                Perm(Icons.Rounded.DirectionsWalk, Tints.Teal, "Steps", AppPermissions::activity) {
+                    multiLauncher.launch(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
+                }
+            )
+            add(Perm(Icons.Rounded.NearMe, Tints.Blue, "Location", AppPermissions::location) {
+                if (!AppPermissions.locationForeground(ctx)) multiLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) multiLauncher.launch(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
             })
         }
     }
@@ -114,7 +132,7 @@ fun PermissionsScreen(onDone: () -> Unit, onBack: (() -> Unit)? = null) {
                     }
                 }
             }
-            val all = granted.all { it }
+            val all = remember(tick) { AppPermissions.allGranted(ctx) } // steps & location are optional
             AccentButton(
                 onDone, Modifier.fillMaxWidth().padding(16.dp),
                 text = if (all || onBack != null) "Done" else "Later",

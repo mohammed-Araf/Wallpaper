@@ -22,6 +22,9 @@ import com.google.firebase.database.ValueEventListener
 /** Canvas editor. Hosts room switching in place, so changing canvas never restarts the screen. */
 class LiveLockscreenActivity : ComponentActivity() {
 
+    override fun onStart() { super.onStart(); com.alancruse.wallpaper.live.LiveTracker.acquire(this) }
+    override fun onStop() { com.alancruse.wallpaper.live.LiveTracker.release(); super.onStop() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = PairingPrefs(this)

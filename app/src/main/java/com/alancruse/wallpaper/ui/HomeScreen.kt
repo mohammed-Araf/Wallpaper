@@ -57,7 +57,6 @@ fun HomeScreen(
     onLeaveGroup: (String) -> Unit,
     onGroups: () -> Unit,
     onPair: () -> Unit,
-    onApplyWallpaper: () -> Unit,
     onSchedule: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -107,18 +106,6 @@ fun HomeScreen(
             ) {
                 BareIconButton(Icons.Rounded.Add, { showAdd = true }, size = 52.dp, contentDescription = "Add")
                 BareIconButton(Icons.Rounded.Schedule, onSchedule, size = 52.dp, contentDescription = "Schedule")
-                Box(
-                    Modifier.height(52.dp).clip(CircleShape).background(c.accent)
-                        .combinedClickableNoRipple(onApplyWallpaper)
-                        .padding(horizontal = 22.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Wallpaper, "Apply wallpaper", tint = c.onAccent, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Live", color = c.onAccent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    }
-                }
                 BareIconButton(Icons.Rounded.Settings, onSettings, size = 52.dp, contentDescription = "Settings")
             }
 
