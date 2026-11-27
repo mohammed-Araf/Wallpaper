@@ -13,8 +13,8 @@ android {
         applicationId = "com.alancruse.wallpaper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "3.1.0"
+        versionCode = 4
+        versionName = "3.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
