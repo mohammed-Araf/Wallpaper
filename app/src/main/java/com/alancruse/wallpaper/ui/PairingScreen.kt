@@ -94,7 +94,7 @@ fun PairingScreen(
             ) {
                 // My code
                 Column(
-                    Modifier.fillMaxWidth().glass(RoundedCornerShape(30.dp)).padding(20.dp),
+                    Modifier.fillMaxWidth().enterAnim(0).glass(RoundedCornerShape(30.dp)).padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     AnimatedContent(pin, label = "pin") { p ->
@@ -119,9 +119,9 @@ fun PairingScreen(
                 }
 
                 // Partner's code
-                AccentButton(::scan, Modifier.fillMaxWidth(), text = "Scan", icon = Icons.Rounded.QrCodeScanner, loading = busy)
+                AccentButton(::scan, Modifier.fillMaxWidth().enterAnim(1), text = "Scan", icon = Icons.Rounded.QrCodeScanner, loading = busy)
                 GlassTextField(
-                    input, { if (it.length <= 6 && it.all(Char::isDigit)) input = it }, "Partner's code",
+                    input, { if (it.length <= 6 && it.all(Char::isDigit)) input = it }, "Partner's code", Modifier.enterAnim(2),
                     leadingIcon = Icons.Rounded.Link,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     textStyle = TextStyle(fontSize = 20.sp, letterSpacing = 6.sp, fontWeight = FontWeight.SemiBold),

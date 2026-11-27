@@ -20,6 +20,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.graphics.graphicsLayer
 import com.alancruse.wallpaper.ui.theme.*
 import kotlinx.coroutines.delay
 
@@ -40,9 +41,12 @@ fun TimedConfirmDialog(
     val progress by animateFloatAsState(
         if (remaining <= 0) 1f else (waitSeconds - remaining).toFloat() / waitSeconds, tween(900), label = "p"
     )
+    val pop = remember { androidx.compose.animation.core.Animatable(0.85f) }
+    LaunchedEffect(Unit) { pop.animateTo(1f, com.alancruse.wallpaper.ui.components.Motion.bouncy()) }
     Dialog(onDismissRequest = onDismiss) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(30.dp)).background(c.cardSurface).padding(24.dp),
+            Modifier.fillMaxWidth().graphicsLayer { scaleX = pop.value; scaleY = pop.value; alpha = ((pop.value - 0.85f) / 0.15f).coerceIn(0f, 1f) }
+                .clip(RoundedCornerShape(30.dp)).background(c.cardSurface).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(Modifier.size(56.dp).clip(RoundedCornerShape(18.dp)).background(accentColor.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {

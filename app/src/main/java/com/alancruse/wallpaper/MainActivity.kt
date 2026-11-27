@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -116,8 +117,8 @@ class MainActivity : ComponentActivity() {
                         targetState = appState,
                         transitionSpec = {
                             val forward = targetState.ordinal > initialState.ordinal
-                            (fadeIn(tween(260)) + slideInHorizontally(tween(320)) { if (forward) it / 6 else -it / 6 }) togetherWith
-                                (fadeOut(tween(200)) + slideOutHorizontally(tween(320)) { if (forward) -it / 6 else it / 6 })
+                            (fadeIn(tween(280)) + scaleIn(spring(0.8f, 300f), 0.96f) + slideInHorizontally(spring(0.85f, 320f)) { if (forward) it / 5 else -it / 5 }) togetherWith
+                                (fadeOut(tween(180)) + scaleOut(tween(260), 0.97f) + slideOutHorizontally(tween(300)) { if (forward) -it / 6 else it / 6 })
                         },
                         label = "nav"
                     ) { state ->

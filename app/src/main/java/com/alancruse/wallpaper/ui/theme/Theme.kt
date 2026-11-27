@@ -24,12 +24,13 @@ fun WallPaperTheme(content: @Composable () -> Unit) {
     val settings = AppSettings.get(LocalContext.current)
     val systemDark = isSystemInDarkTheme()
     val accent = settings.accent.color
-    val colors = when (settings.themeMode) {
+    val target = when (settings.themeMode) {
         ThemeMode.LIGHT -> lightColors(accent)
         ThemeMode.DARK -> darkColors(accent)
         ThemeMode.OLED -> oledColors(accent)
         ThemeMode.SYSTEM -> if (systemDark) oledColors(accent) else lightColors(accent)
     }
+    val colors = com.alancruse.wallpaper.ui.components.animatedColors(target)
 
     val scheme = if (colors.isDark) darkColorScheme(
         primary = colors.accent, onPrimary = colors.onAccent,

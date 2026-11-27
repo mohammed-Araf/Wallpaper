@@ -99,10 +99,10 @@ fun PermissionsScreen(onDone: () -> Unit, onBack: (() -> Unit)? = null) {
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 Spacer(Modifier.height(if (onBack == null) 24.dp else 0.dp))
-                AppLogo(84.dp)
+                AppLogo(84.dp, Modifier.enterAnim(0))
                 Text("Permissions", color = c.textPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
                 Spacer(Modifier.height(4.dp))
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(2)) {
                     perms.forEachIndexed { i, p ->
                         val ok = granted[i]
                         SettingRow(p.icon, p.color, p.title, onClick = if (ok) null else p.request, trailing = {

@@ -184,8 +184,9 @@ fun BareIconButton(
     val c = LocalWallpaperColors.current
     val bg by animateColorAsState(if (active) c.accent else Color.Transparent, tween(180), label = "bg")
     val fg by animateColorAsState(if (active) c.onAccent else tint ?: c.textPrimary, tween(180), label = "fg")
+    val pop by animateFloatAsState(if (active) 1f else 0.96f, Motion.bouncy(), label = "pop")
     Box(
-        modifier.pressScale(src).size(size).clip(CircleShape).background(bg)
+        modifier.pressScale(src).scale(pop).size(size).clip(CircleShape).background(bg)
             .alpha(if (enabled) 1f else 0.3f)
             .clickable(src, null, enabled = enabled) { haptic(Haptic.Tick); onClick() },
         contentAlignment = Alignment.Center
@@ -272,24 +273,30 @@ fun GlassSegmented(
 ) {
     val c = LocalWallpaperColors.current
     val haptic = rememberHaptics()
-    Row(
+    BoxWithConstraints(
         modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(14.dp))
-            .background(c.textPrimary.copy(alpha = 0.06f)).padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+            .background(c.textPrimary.copy(alpha = 0.06f)).padding(3.dp)
     ) {
-        options.forEachIndexed { i, (icon, label) ->
-            val sel = i == selected
-            val bg by animateColorAsState(if (sel) c.accent else Color.Transparent, tween(200), label = "seg")
-            Row(
-                Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(11.dp)).background(bg)
-                    .clickable { haptic(Haptic.Tick); onSelect(i) },
-                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
-            ) {
-                val fg = if (sel) c.onAccent else c.textSecondary
-                Icon(icon, label, tint = fg, modifier = Modifier.size(17.dp))
-                if (label != null) {
-                    Spacer(Modifier.width(5.dp))
-                    Text(label, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        val n = options.size.coerceAtLeast(1)
+        val w = maxWidth / n
+        val x by animateDpAsState(w * selected.coerceAtLeast(0), Motion.bouncy(), label = "segx")
+        // Sliding pill
+        if (selected >= 0) Box(Modifier.offset(x = x).width(w).fillMaxHeight().clip(RoundedCornerShape(11.dp)).background(c.accent))
+        Row(Modifier.fillMaxSize()) {
+            options.forEachIndexed { i, (icon, label) ->
+                val sel = i == selected
+                val src = remember { MutableInteractionSource() }
+                val fg by animateColorAsState(if (sel) c.onAccent else c.textSecondary, tween(220), label = "segfg")
+                Row(
+                    Modifier.weight(1f).fillMaxHeight().pressScale(src, 0.9f).clip(RoundedCornerShape(11.dp))
+                        .clickable(src, null) { haptic(Haptic.Tick); onSelect(i) },
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(icon, label, tint = fg, modifier = Modifier.size(17.dp))
+                    if (label != null) {
+                        Spacer(Modifier.width(5.dp))
+                        Text(label, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
                 }
             }
         }
@@ -300,19 +307,22 @@ fun GlassSegmented(
 fun GlassSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     val c = LocalWallpaperColors.current
     val haptic = rememberHaptics()
-    val x by animateDpAsState(if (checked) 20.dp else 0.dp, spring(0.7f, 600f), label = "sw")
-    val track by animateColorAsState(if (checked) c.accent else c.textPrimary.copy(alpha = 0.14f), tween(180), label = "tr")
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val thumbW by animateDpAsState(if (pressed) 33.dp else 27.dp, Motion.snappy(), label = "tw")
+    val x by animateDpAsState(if (checked) 47.dp - thumbW else 0.dp, Motion.bouncy(), label = "sw")
+    val track by animateColorAsState(if (checked) c.accent else c.textPrimary.copy(alpha = 0.14f), tween(220), label = "tr")
     Box(
-        Modifier.size(51.dp, 31.dp).clip(CircleShape).background(track)
-            .clickable { haptic(Haptic.Tick); onCheckedChange(!checked) }.padding(2.dp)
-    ) { Box(Modifier.offset(x = x).size(27.dp).clip(CircleShape).background(Color.White)) }
+        Modifier.pressScale(src, 0.95f).size(51.dp, 31.dp).clip(CircleShape).background(track)
+            .clickable(src, null) { haptic(Haptic.Tick); onCheckedChange(!checked) }.padding(2.dp)
+    ) { Box(Modifier.offset(x = x).size(thumbW, 27.dp).clip(CircleShape).background(Color.White)) }
 }
 
 // ═════════════════════ Settings rows ═════════════════════
 
 @Composable
 fun GlassGroup(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.fillMaxWidth().glass(RoundedCornerShape(24.dp)).padding(vertical = 4.dp), content = content)
+    Column(modifier.fillMaxWidth().glass(RoundedCornerShape(24.dp)).animateContentSize(Motion.gentle()).padding(vertical = 4.dp), content = content)
 }
 
 @Composable
@@ -333,9 +343,12 @@ fun SettingRow(
     trailing: @Composable (() -> Unit)? = { if (onClick != null) Icon(Icons.Rounded.ChevronRight, null, tint = LocalWallpaperColors.current.textMuted) },
 ) {
     val haptic = rememberHaptics()
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val hl by animateColorAsState(if (pressed) LocalWallpaperColors.current.textPrimary.copy(alpha = 0.07f) else Color.Transparent, tween(140), label = "hl")
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp)
-            .then(if (onClick != null) Modifier.clickable { haptic(Haptic.Tick); onClick() } else Modifier)
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).pressScale(src, 0.98f).background(hl)
+            .then(if (onClick != null) Modifier.clickable(src, null) { haptic(Haptic.Tick); onClick() } else Modifier)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -395,11 +408,12 @@ fun GlassSheet(
         }
         AnimatedVisibility(
             visible, modifier = Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically(spring(0.85f, 400f)) { it } + fadeIn(),
+            enter = slideInVertically(spring(0.72f, 380f)) { it } + fadeIn() + scaleIn(spring(0.7f, 380f), 0.94f),
             exit = slideOutVertically(tween(220)) { it } + fadeOut(tween(220)),
         ) {
             Column(
                 Modifier.fillMaxWidth().padding(8.dp).navigationBarsPadding()
+                    .dragToDismiss(onDismiss)
                     .glass(RoundedCornerShape(32.dp), strong = true, tint = c.cardSurface.copy(alpha = if (c.isDark) 0.75f else 0.85f))
                     .clickable(remember { MutableInteractionSource() }, null) {}
                     .padding(horizontal = 18.dp, vertical = 10.dp),

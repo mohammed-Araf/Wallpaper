@@ -5,7 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -69,11 +69,11 @@ fun GroupManageScreen(currentUid: String, groupId: String, onBack: () -> Unit) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(members, key = { it.uid }) { m ->
+                itemsIndexed(members, key = { _, m -> m.uid }) { idx, m ->
                     val owner = m.uid == info?.ownerId
                     val me = m.uid == currentUid
                     val canManage = isOwner && !me && !owner
-                    Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(22.dp)).clickable(enabled = canManage) { expanded = if (expanded == m.uid) null else m.uid }.padding(12.dp)) {
+                    Column(Modifier.fillMaxWidth().animateItem().enterAnim(idx).glass(RoundedCornerShape(22.dp)).clickable(enabled = canManage) { expanded = if (expanded == m.uid) null else m.uid }.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(42.dp).clip(CircleShape).background(if (owner) c.accent else c.textPrimary.copy(alpha = 0.1f)), contentAlignment = Alignment.Center) {
                                 Text(m.name.firstOrNull()?.uppercase() ?: "?", color = if (owner) c.onAccent else c.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
