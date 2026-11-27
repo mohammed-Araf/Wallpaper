@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Shader
+import android.graphics.Matrix
+import android.graphics.BitmapShader
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -72,7 +75,110 @@ object CanvasRenderer {
     private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val rect = RectF()
 
-    fun textPaintFor(t: TextElement): Paint = textPaint.apply { textSize = t.fontSize * t.scale }
+    // ── Text looks ──
+    const val TEXT_STYLES = 5
+    const val TEXT_FONTS = 5
+    const val IMAGE_STYLES = 5
+
+    private val typefaces = arrayOf(
+        Typeface.create("sans-serif-medium", Typeface.NORMAL),
+        Typeface.create(Typeface.SERIF, Typeface.BOLD),
+        Typeface.create("casual", Typeface.NORMAL),
+        Typeface.create(Typeface.MONOSPACE, Typeface.BOLD),
+        Typeface.create("sans-serif-condensed", Typeface.BOLD),
+    )
+    fun typeface(font: Int): Typeface = typefaces[font.mod(TEXT_FONTS)]
+
+    /** Black or white, whichever reads better on [argb]. */
+    fun contrastOn(argb: Int): Int {
+        val l = (0.299 * android.graphics.Color.red(argb) + 0.587 * android.graphics.Color.green(argb) + 0.114 * android.graphics.Color.blue(argb)) / 255
+        return if (l > 0.6) 0xFF111111.toInt() else android.graphics.Color.WHITE
+    }
+
+    /** Extra hit/visual padding around a text block for label styles. */
+    fun textPad(t: TextElement): Float = if (t.style.mod(TEXT_STYLES) in 2..3) t.fontSize * t.scale * 0.35f else 0f
+
+    fun textPaintFor(t: TextElement): Paint = textPaint.apply { textSize = t.fontSize * t.scale; typeface = typeface(t.font) }
+
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND }
+
+    private fun drawText(canvas: Canvas, t: TextElement) {
+        val size = t.fontSize * t.scale
+        textPaint.textSize = size; textPaint.typeface = typeface(t.font)
+        val lines = t.text.split('\n')
+        val lineH = size * 1.2f
+        val style = t.style.mod(TEXT_STYLES)
+        canvas.save(); canvas.rotate(t.rotation, t.x, t.y)
+        var fill = t.colorArgb
+        if (style == 2 || style == 3) {
+            val pad = size * 0.35f
+            val w = lines.maxOf { textPaint.measureText(it) }
+            rect.set(t.x - pad, t.y - size - pad * 0.4f, t.x + w + pad, t.y + lineH * (lines.size - 1) + size * 0.3f + pad * 0.6f)
+            labelPaint.color = if (style == 2) t.colorArgb else 0x8C000000.toInt()
+            canvas.drawRoundRect(rect, size * 0.4f, size * 0.4f, labelPaint)
+            if (style == 2) fill = contrastOn(t.colorArgb)
+        }
+        if (style == 4) {
+            outlinePaint.textSize = size; outlinePaint.typeface = textPaint.typeface
+            outlinePaint.strokeWidth = size * 0.14f; outlinePaint.color = contrastOn(t.colorArgb)
+            lines.forEachIndexed { i, line -> canvas.drawText(line, t.x, t.y + i * lineH, outlinePaint) }
+        }
+        textPaint.color = fill
+        if (style == 1) textPaint.setShadowLayer(size * 0.14f, 0f, size * 0.06f, 0xAA000000.toInt())
+        lines.forEachIndexed { i, line -> canvas.drawText(line, t.x, t.y + i * lineH, textPaint) }
+        textPaint.clearShadowLayer()
+        canvas.restore()
+    }
+
+    // ── Image frames ──
+    private val shaderCache = java.util.WeakHashMap<Bitmap, BitmapShader>()
+    private val shaderMatrix = Matrix()
+    private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = android.graphics.Color.WHITE }
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = android.graphics.Color.BLACK }
+
+    private fun drawImage(canvas: Canvas, img: ImageElement, bmp: Bitmap) {
+        val w = img.width * img.scale; val h = img.height * img.scale
+        rect.set(img.x, img.y, img.x + w, img.y + h)
+        val m = minOf(w, h)
+        canvas.save(); canvas.rotate(img.rotation, rect.centerX(), rect.centerY())
+        when (img.style.mod(IMAGE_STYLES)) {
+            0 -> canvas.drawBitmap(bmp, null, rect, bmpPaint)
+            else -> {
+                val style = img.style.mod(IMAGE_STYLES)
+                val shader = shaderCache.getOrPut(bmp) { BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
+                if (style == 4) {
+                    // Circle crop of the centre, scaled so the circle is fully covered.
+                    val r = m / 2f; val cx = rect.centerX(); val cy = rect.centerY()
+                    val k = maxOf(m / bmp.width, m / bmp.height)
+                    shaderMatrix.setScale(k, k); shaderMatrix.postTranslate(cx - bmp.width * k / 2f, cy - bmp.height * k / 2f)
+                    shader.setLocalMatrix(shaderMatrix); bmpPaint.shader = shader
+                    canvas.drawCircle(cx, cy, r + m * 0.03f, framePaint)
+                    canvas.drawCircle(cx, cy, r, bmpPaint)
+                } else {
+                    shaderMatrix.setScale(w / bmp.width, h / bmp.height); shaderMatrix.postTranslate(rect.left, rect.top)
+                    shader.setLocalMatrix(shaderMatrix); bmpPaint.shader = shader
+                    val radius = if (style == 2) m * 0.02f else m * 0.08f
+                    if (style == 3) {
+                        shadowPaint.setShadowLayer(m * 0.06f, 0f, m * 0.03f, 0x99000000.toInt())
+                        canvas.drawRoundRect(rect, radius, radius, shadowPaint)
+                        shadowPaint.clearShadowLayer()
+                    }
+                    if (style == 2) {
+                        val b = m * 0.045f
+                        val fr = RectF(rect.left - b, rect.top - b, rect.right + b, rect.bottom + b * 3.2f)
+                        shadowPaint.setShadowLayer(m * 0.04f, 0f, m * 0.02f, 0x66000000)
+                        canvas.drawRoundRect(fr, m * 0.025f, m * 0.025f, shadowPaint)
+                        shadowPaint.clearShadowLayer()
+                        canvas.drawRoundRect(fr, m * 0.025f, m * 0.025f, framePaint)
+                    }
+                    canvas.drawRoundRect(rect, radius, radius, bmpPaint)
+                }
+                bmpPaint.shader = null
+            }
+        }
+        canvas.restore()
+    }
 
     private class Layer(val ts: Long, val type: Int, val index: Int)
 
@@ -121,21 +227,13 @@ object CanvasRenderer {
             }
             2 -> {
                 val t = texts.getOrNull(layer.index) ?: continue
-                textPaint.color = t.colorArgb
-                textPaint.textSize = t.fontSize * t.scale
-                val lineH = textPaint.textSize * 1.2f
-                canvas.save(); canvas.rotate(t.rotation, t.x, t.y)
-                t.text.split('\n').forEachIndexed { i, line -> canvas.drawText(line, t.x, t.y + i * lineH, textPaint) }
-                canvas.restore()
+                if (t.text.isNotEmpty()) drawText(canvas, t)
             }
             3 -> {
                 val img = images.getOrNull(layer.index) ?: continue
                 if (img.imageBase64.isEmpty()) continue
                 val bmp = (if (decode) decodeBitmap(img.imageBase64) else cachedBitmap(img.imageBase64)) ?: continue
-                val w = img.width * img.scale; val h = img.height * img.scale
-                rect.set(img.x, img.y, img.x + w, img.y + h)
-                canvas.save(); canvas.rotate(img.rotation, rect.centerX(), rect.centerY())
-                canvas.drawBitmap(bmp, null, rect, bmpPaint); canvas.restore()
+                drawImage(canvas, img, bmp)
             }
         }
     }

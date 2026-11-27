@@ -22,8 +22,9 @@ After sign-in, a short permissions screen (notifications, scheduled switching, b
 |---|---|---|
 | 1 | Drag | Draw / erase / move the tool's target |
 | 1 | Tap | Dot (pen) · place text (text tool) · erase a whole stroke (stroke eraser) |
-| 1 | Tap a text (move tool) | Edit the text |
-| 1 | Drag an item to the bottom | Delete (bin appears) |
+| 1 | Tap a text (move / text tool) | Edit it: look (plain · shadow · label · dark label · outline), font, color |
+| 1 | Tap an image | Next frame: plain · rounded · white border · shadow · circle |
+| 1 | Drag an item to the bottom | Delete (bin appears) — two-finger drags never delete, so items can be placed near the bin |
 | 1 | Drag empty space while zoomed | Pan the view |
 | 2 | Pinch / twist on an item | Scale + rotate the item |
 | 2 | Pinch on empty space | Zoom / pan the view (outline shows the real wallpaper area) |
