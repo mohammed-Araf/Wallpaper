@@ -77,6 +77,10 @@ import com.alancruse.wallpaper.live.LiveTracker
 import com.alancruse.wallpaper.live.StickerKinds
 import com.alancruse.wallpaper.wallpaper.StickerArt
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -163,6 +167,8 @@ fun LiveCanvasScreen(
     var dragEmoji by remember { mutableStateOf<String?>(null) }
     var dragEmojiPos by remember { mutableStateOf(Offset.Zero) }
     var editing by remember { mutableStateOf<TextEdit?>(null) }
+    // Name plate being edited on a live sticker: sticker index + draft text
+    var plateEdit by remember { mutableStateOf<Pair<Int, String>?>(null) }
     var uploading by remember { mutableStateOf(false) }
 
     // Element drag → dustbin
@@ -333,6 +339,7 @@ fun LiveCanvasScreen(
     BackHandler {
         when {
             editing != null -> commitText()
+            plateEdit != null -> plateEdit = null
             trayOpen -> trayOpen = false
             !chrome -> chrome = true
             else -> onDone()
@@ -360,6 +367,10 @@ fun LiveCanvasScreen(
                         val canEdit = !readOnly
 
                         if (editing != null) { commitText() }
+                        plateEdit?.let { (i, t) ->
+                            sync.sharedStickers.getOrNull(i)?.let { sync.updateSticker(i, it.copy(label = t.trim().take(12))) }
+                            plateEdit = null; keyboard?.hide()
+                        }
                         if (trayOpen) trayOpen = false
 
                         // ── one-finger start ──
@@ -424,7 +435,8 @@ fun LiveCanvasScreen(
                                         val g = grabbed
                                         if (g != null) {
                                             // Small slop before a press becomes a drag, so taps stay taps.
-                                            if (!draggingEl && travel > 10f) { draggingEl = true; haptic(Haptic.Tick) }
+                                            val canDrag = activeTool == Tool.MOVE || g.first == ElType.TEXT
+                                            if (canDrag && !draggingEl && travel > 10f) { draggingEl = true; haptic(Haptic.Tick) }
                                             if (draggingEl) {
                                                 transformEl(g, d / viewScale, 1f, 0f)
                                                 updateBin(ch.position.y)
@@ -500,6 +512,11 @@ fun LiveCanvasScreen(
                                         if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
                                         else if (!draggingEl && g.first == ElType.TEXT) {
                                             sync.sharedTexts.getOrNull(g.second)?.let { t -> editing = TextEdit(t, g.second) }
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.TEXT &&
+                                            sync.sharedStickers.getOrNull(g.second)?.kind?.let { StickerKinds.needsStats(it) } == true
+                                        ) {
+                                            // Text tool + tap on a live sticker → edit its name plate
+                                            plateEdit = g.second to sync.sharedStickers[g.second].label
                                         } else if (!draggingEl && g.first == ElType.IMAGE) {
                                             sync.sharedImages.getOrNull(g.second)?.let { img ->
                                                 sync.updateImage(g.second, img.copy(style = (img.style + 1).mod(CanvasRenderer.IMAGE_STYLES)))
@@ -689,7 +706,7 @@ fun LiveCanvasScreen(
                     }
                 }
 
-                AnimatedVisibility(chrome && !draggingEl && editing == null, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
+                AnimatedVisibility(chrome && !draggingEl && editing == null && plateEdit == null, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
                     Row(
                         Modifier.glass(CircleShape, strong = true).padding(5.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically
@@ -706,6 +723,40 @@ fun LiveCanvasScreen(
                         BareIconButton(Icons.Rounded.AddReaction, { if (editing != null) commitText(); showStickers = true }, size = 48.dp, contentDescription = "Sticker")
                         BareIconButton(Icons.Rounded.AddPhotoAlternate, { if (editing != null) commitText(); imagePicker.launch("image/*") }, size = 48.dp, contentDescription = "Image")
                     }
+                }
+            }
+
+            // Name plate editor for live stickers
+            AnimatedVisibility(
+                plateEdit != null, modifier = Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding().padding(bottom = 10.dp),
+                enter = fadeIn() + slideInVertically(Motion.bouncy()) { it / 2 }, exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                val pe = plateEdit
+                if (pe != null) {
+                    val fr = remember { FocusRequester() }
+                    fun save() {
+                        sync.sharedStickers.getOrNull(pe.first)?.let { sync.updateSticker(pe.first, it.copy(label = pe.second.trim().take(12))) }
+                        haptic(Haptic.Confirm); plateEdit = null; keyboard?.hide()
+                    }
+                    Row(
+                        Modifier.padding(horizontal = 12.dp).widthIn(max = 460.dp).glass(RoundedCornerShape(28.dp), strong = true).padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFF1CC)), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.Badge, null, tint = Color(0xFF2A1840), modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        BasicTextField(
+                            pe.second, { if (it.length <= 12) plateEdit = pe.first to it }, singleLine = true,
+                            textStyle = TextStyle(color = c.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                            cursorBrush = SolidColor(c.accent),
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { save() }),
+                            modifier = Modifier.weight(1f).focusRequester(fr)
+                        )
+                        BareIconButton(Icons.Rounded.Check, { save() }, active = true, size = 44.dp, contentDescription = "Done")
+                    }
+                    LaunchedEffect(pe.first) { fr.requestFocus(); keyboard?.show() }
                 }
             }
 
@@ -819,6 +870,7 @@ fun LiveCanvasScreen(
                             sync.pushSticker(StickerElement(
                                 emoji = FallbackEmoji[k] ?: "✨", kind = k,
                                 owner = if (widget) FirebaseAuth.getInstance().currentUser?.uid ?: "" else "",
+                                label = if (StickerKinds.needsStats(k)) FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "" else "",
                                 x = p.x, y = p.y, size = (if (widget) 170f else 140f) / viewScale
                             ))
                             haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE

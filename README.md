@@ -46,7 +46,10 @@ The sticker button opens three tabs: **Emoji**, **Animated** and **Live**. Every
 - **Animated**: heart, star, fire, sun, sleepy moon, ghost, party popper, rainbow, LOVE.
 - **Live**: steps · km today · speed · steps + km · speed + km · billboard (all three) · distance.
   - Stat stickers show the numbers of whoever placed them, and others see them update. The steps sticker upgrades with the day's count (3k → 6k → 10k → 15k: new colour, medal, sparkles, a gold shimmer, then a crown).
-  - Distance shows how far you are from your partner, or a list for groups, using positions rounded to ~110 m. "So close!" under 1 km, and hearts with "together!" under 150 m.
+  - Live stat stickers carry a **name plate** (your first name by default) so group members can tell whose numbers are whose. With the **Text** tool, tap the sticker to rename it. The plate is part of the sticker, so it only moves with the Move tool.
+  - Distance, using positions rounded to ~110 m:
+    - Two people: "so close!" under 1 km, and hearts with "together!" under 150 m.
+    - Groups (3+): a mini map. Everyone keeps their real direction from the group's centre, with log-scaled distance so metres and kilometres both fit. Each person is linked to their nearest neighbour (n−1 links) and each link is labelled with the real distance, with hearts for people together. Each phone adapts its own update rate to its nearest person, so every pair stays current.
 
 Privacy: stats are shared as plain numbers (`users/{uid}/stats`). Positions are rounded on the phone and only written to canvases that contain a distance sticker (`canvas_sessions/{room}/presence`), and removed when the sticker is gone. Permissions (steps, location, "allow all the time") are asked when you place a live sticker.
 

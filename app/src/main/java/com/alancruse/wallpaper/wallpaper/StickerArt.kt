@@ -37,7 +37,7 @@ object StickerArt {
         "w:speed" -> 72f to 60f
         "w:steps_km", "w:speed_km" -> 98f to 60f
         "w:board" -> 118f to 80f
-        "w:dist" -> 102f to 62f
+        "w:dist" -> 112f to 88f
         else -> 50f to 50f
     }
 
@@ -61,12 +61,12 @@ object StickerArt {
                 "a:party" -> party(c, s)
                 "a:rainbow" -> rainbow(c, s)
                 "a:love" -> love(c, s)
-                "w:steps" -> stepsCard(c, s, src?.stats(st.owner))
-                "w:km" -> kmCard(c, s, src?.stats(st.owner))
-                "w:speed" -> speedCard(c, s, src?.stats(st.owner))
-                "w:steps_km" -> stepsKmCard(c, s, src?.stats(st.owner))
-                "w:speed_km" -> speedKmCard(c, s, src?.stats(st.owner))
-                "w:board" -> billboard(c, s, src?.stats(st.owner))
+                "w:steps" -> { stepsCard(c, s, src?.stats(st.owner)); plate(c, st.label, -50f) }
+                "w:km" -> { kmCard(c, s, src?.stats(st.owner)); plate(c, st.label, -50f) }
+                "w:speed" -> { speedCard(c, s, src?.stats(st.owner)); plate(c, st.label, -55f) }
+                "w:steps_km" -> { stepsKmCard(c, s, src?.stats(st.owner)); plate(c, st.label, -55f) }
+                "w:speed_km" -> { speedKmCard(c, s, src?.stats(st.owner)); plate(c, st.label, -55f) }
+                "w:board" -> { billboard(c, s, src?.stats(st.owner)); plate(c, st.label, -74f) }
                 "w:dist" -> distance(c, s, src, roomId)
                 else -> { fill.color = INK; c.drawCircle(0f, 0f, 20f, fill) }
             }
@@ -408,7 +408,7 @@ object StickerArt {
         footprints(c, -46f, 2f, 1.15f, s)
         chunky(c, stepsText(st), 20f, 8f, 32f, maxW = 88f)
         chunky(c, "steps", 20f, 32f, 13f)
-        if (t > 0) { c.save(); c.rotate(-6f); chunky(c, cheers[t], -10f, -52f, 15f, 0xFFFFF3B0.toInt()); c.restore() }
+        if (t > 0) { c.save(); c.rotate(-4f); chunky(c, cheers[t], -30f, 66f, 15f, 0xFFFFF3B0.toInt()); c.restore() }
         badge(c, 62f, -44f, t, s)
     }
 
@@ -490,7 +490,26 @@ object StickerArt {
         gauge(c, 72f, -36f, 15f, v, s)
         chunky(c, v?.let { "${it.roundToInt()} km/h" } ?: "--", 72f, -2f, 16f, 0xFFFFB27A.toInt(), maxW = 66f)
         badge(c, 104f, -70f, t, s)
-        if (t > 0) chunky(c, cheers[t], 0f, -78f, 14f, 0xFFFFF3B0.toInt())
+        if (t > 0) chunky(c, cheers[t], 0f, 52f, 14f, 0xFFFFF3B0.toInt())
+    }
+
+    // ═════════ Name plate ═════════
+
+    private val plateText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create("sans-serif-black", Typeface.BOLD); textAlign = Paint.Align.CENTER; color = INK
+    }
+
+    /** Cream "number plate" straddling the top edge, with two bolts. */
+    private fun plate(c: Canvas, label: String, edgeY: Float) {
+        val text = label.trim().take(12)
+        if (text.isEmpty()) return
+        plateText.textSize = 13f
+        val w = plateText.measureText(text) + 30f
+        shape.reset(); shape.addRoundRect(-w / 2, edgeY - 11f, w / 2, edgeY + 11f, 7f, 7f, Path.Direction.CW)
+        toon(c, shape, 0xFFFFF1CC.toInt(), depth = 3f, stroke = 3f, shadow = false)
+        fill.color = 0xFF9A8A6A.toInt()
+        c.drawCircle(-w / 2 + 7f, edgeY, 2.2f, fill); c.drawCircle(w / 2 - 7f, edgeY, 2.2f, fill)
+        c.drawText(text, 0f, edgeY + 4.6f, plateText)
     }
 
     // ═════════ Distance ═════════
@@ -514,7 +533,8 @@ object StickerArt {
         val me = src?.myUid
         val mine = all[me]
         val others = all.filterKeys { it != me }.values.filter { System.currentTimeMillis() - it.at < 12 * 3600_000L }
-        if (others.size >= 2 && mine != null) return distanceGroup(c, s, mine, others)
+        val fresh = all.filterValues { System.currentTimeMillis() - it.at < 12 * 3600_000L }
+        if (fresh.size >= 3) return distanceMap(c, s, me, fresh)
 
         val other = others.firstOrNull()
         val d = if (mine != null && other != null) haversineKm(mine, other) else null
@@ -553,22 +573,65 @@ object StickerArt {
         chunky(c, when { mine == null -> "share location"; other == null -> "waiting…"; together -> "♥"; close -> "so close!"; else -> "away" }, 0f, 46f, 11f)
     }
 
-    private fun distanceGroup(c: Canvas, s: Float, mine: Presence, others: List<Presence>) {
-        val rows = others.map { it to haversineKm(mine, it) }.sortedBy { it.second }.take(4)
-        val h = 30f + rows.size * 30f
-        card(c, 204f, h, 0xFFFF8FB1.toInt())
-        rows.forEachIndexed { i, (p, d) ->
-            val y = -h / 2 + 30f + i * 30f
-            val close = d < 1.0
-            avatar(c, -78f, y - 5f - if (close) abs(sin(s * 4f + i)) * 4f else 0f, 11f, p.name, avatarCols[(i + 1) % avatarCols.size])
-            chunky(c, p.name.ifBlank { "friend" }, -60f, y, 13f, align = Paint.Align.LEFT, maxW = 70f)
-            chunky(c, if (d < 0.15) "here!" else distText(d), 88f, y, 13f, if (close) 0xFFFFF3B0.toInt() else Color.WHITE, Paint.Align.RIGHT, maxW = 62f)
-            if (close) {
-                val k = 1f + 0.2f * bump(s % 1.1f, 0.1f, 0.12f)
-                c.save(); c.translate(24f, y - 5f); c.scale(k, k)
-                heartPath(aux, 6f); fill.color = 0xFFFF4D6D.toInt(); c.drawPath(aux, fill)
-                c.restore()
+    /**
+     * Everyone at once: each person keeps their real direction from the group's centre,
+     * with distance log-scaled so metres and kilometres both fit. Links follow the
+     * minimum spanning tree (each person to their nearest neighbour; n-1 lines, no clutter),
+     * labelled with the real distance — hearts for people standing together.
+     */
+    private fun distanceMap(c: Canvas, s: Float, me: String?, all: Map<String, Presence>) {
+        val people = all.entries.sortedBy { it.key }.take(8)
+        val n = people.size
+        card(c, 220f, 170f, 0xFFFF8FB1.toInt())
+        val lat0 = people.sumOf { it.value.lat } / n; val lng0 = people.sumOf { it.value.lng } / n
+        val kx = 111.32 * cos(Math.toRadians(lat0)); val ky = 110.57
+        val km = people.map { ((it.value.lng - lng0) * kx).toFloat() to (-(it.value.lat - lat0) * ky).toFloat() }
+        val maxR = km.maxOf { hypot(it.first, it.second) }.coerceAtLeast(0.01f)
+        val rx = 78f; val ry = 50f; val cy = 4f
+        val px = FloatArray(n); val py = FloatArray(n)
+        km.forEachIndexed { i, (x, y) ->
+            val r = hypot(x, y)
+            val f = if (r < 1e-4f) 0f else (ln(1f + r / 0.2f) / ln(1f + maxR / 0.2f))
+            px[i] = if (r < 1e-4f) 0f else x / r * f * rx
+            py[i] = if (r < 1e-4f) 0f else y / r * f * ry + cy
+        }
+        // Push overlapping bubbles apart, keep them on the card.
+        val minD = 30f
+        repeat(40) {
+            for (a in 0 until n) for (b in a + 1 until n) {
+                var dx = px[b] - px[a]; var dy = py[b] - py[a]
+                var d = hypot(dx, dy)
+                if (d < 1e-3f) { dx = cos(a + b.toFloat()); dy = sin(a + b.toFloat()); d = 1f }
+                if (d < minD) { val push = (minD - d) / 2f; px[a] -= dx / d * push; py[a] -= dy / d * push; px[b] += dx / d * push; py[b] += dy / d * push }
             }
+            for (i in 0 until n) { px[i] = px[i].coerceIn(-rx - 8f, rx + 8f); py[i] = py[i].coerceIn(cy - ry - 4f, cy + ry + 4f) }
+        }
+        // Prim's MST on real distances.
+        val dist = Array(n) { a -> DoubleArray(n) { b -> haversineKm(people[a].value, people[b].value) } }
+        val inTree = BooleanArray(n).also { it[0] = true }
+        val edges = ArrayList<Pair<Int, Int>>()
+        repeat(n - 1) {
+            var best = Double.MAX_VALUE; var e = 0 to 0
+            for (a in 0 until n) if (inTree[a]) for (b in 0 until n) if (!inTree[b] && dist[a][b] < best) { best = dist[a][b]; e = a to b }
+            inTree[e.second] = true; edges.add(e)
+        }
+        line.pathEffect = DashPathEffect(floatArrayOf(5f, 6f), -s * 24f)
+        for ((a, b) in edges) { line.color = Color.WHITE; line.strokeWidth = 3f; c.drawLine(px[a], py[a], px[b], py[b], line) }
+        line.pathEffect = null; line.color = INK
+        for ((a, b) in edges) {
+            val mx = (px[a] + px[b]) / 2; val my = (py[a] + py[b]) / 2
+            val d = dist[a][b]
+            if (d < 0.15) {
+                val k = 1f + 0.22f * bump(s % 1.1f, 0.1f, 0.12f)
+                c.save(); c.translate(mx, my); c.scale(k, k); heartPath(aux, 7f); fill.color = 0xFFFF4D6D.toInt(); c.drawPath(aux, fill); line.strokeWidth = 2f; c.drawPath(aux, line); c.restore()
+            } else chunky(c, distText(d), mx, my + 3f, 9f, if (d < 1.0) 0xFFFFF3B0.toInt() else Color.WHITE)
+        }
+        people.forEachIndexed { i, (uid, p) ->
+            val near = (0 until n).any { j -> j != i && dist[i][j] < 1.0 }
+            val y = py[i] - if (near) abs(sin(s * 4f + i)) * 4f else 0f
+            if (uid == me) { fill.color = 0xFFFFF3B0.toInt(); c.drawCircle(px[i], y, 16f, fill) }
+            avatar(c, px[i], y, 12.5f, p.name, avatarCols[i % avatarCols.size])
+            chunky(c, if (uid == me) "you" else p.name.ifBlank { "friend" }.take(7), px[i], y + 24f, 8.5f)
         }
     }
 
