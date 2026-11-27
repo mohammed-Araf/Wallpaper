@@ -3,6 +3,7 @@ package com.alancruse.wallpaper.ui
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +48,7 @@ fun SettingsScreen(
     onSchedule: () -> Unit,
     onApplyWallpaper: () -> Unit,
     onClearLockscreen: () -> Unit,
+    onPermissions: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -65,7 +68,7 @@ fun SettingsScreen(
             ) {
                 // Account
                 Row(
-                    Modifier.fillMaxWidth().glass(RoundedCornerShape(26.dp)).padding(16.dp),
+                    Modifier.fillMaxWidth().enterAnim(0).glass(RoundedCornerShape(26.dp)).padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(Modifier.size(56.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
@@ -81,7 +84,7 @@ fun SettingsScreen(
 
                 // Appearance
                 SectionLabel("Appearance")
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(1)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         val modes = listOf(
                             ThemeMode.SYSTEM to (Icons.Rounded.BrightnessAuto to "Auto"),
@@ -93,12 +96,13 @@ fun SettingsScreen(
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             AccentOption.entries.forEach { a ->
                                 val sel = a == s.accent
+                                val sw by androidx.compose.animation.core.animateFloatAsState(if (sel) 1.12f else 1f, Motion.bouncy(), label = "sw")
                                 Box(
-                                    Modifier.size(38.dp).clip(CircleShape).background(a.color)
+                                    Modifier.size(38.dp).graphicsLayer { scaleX = sw; scaleY = sw }.clip(CircleShape).background(a.color)
                                         .border(if (sel) 3.dp else 0.dp, c.textPrimary, CircleShape)
                                         .clickable { s.accent = a },
                                     contentAlignment = Alignment.Center
-                                ) { if (sel) Icon(Icons.Rounded.Check, null, tint = if (a == AccentOption.MONO) c.background else androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(18.dp)) }
+                                ) { androidx.compose.animation.AnimatedVisibility(sel, enter = androidx.compose.animation.scaleIn(Motion.bouncy()) + androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.scaleOut() + androidx.compose.animation.fadeOut()) { Icon(Icons.Rounded.Check, null, tint = if (a == AccentOption.MONO) c.background else androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(18.dp)) } }
                             }
                         }
                     }
@@ -108,7 +112,7 @@ fun SettingsScreen(
 
                 // Canvas
                 SectionLabel("Canvas")
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(2)) {
                     SettingRow(Icons.Rounded.Gesture, Tints.Blue, "Smooth strokes", trailing = { GlassSwitch(s.smoothStrokes) { s.smoothStrokes = it } })
                     SettingRow(Icons.Rounded.Vibration, Tints.Orange, "Haptics", trailing = { GlassSwitch(s.haptics) { s.haptics = it } })
                     SettingRow(Icons.Rounded.StayCurrentPortrait, Tints.Green, "Keep screen on", trailing = { GlassSwitch(s.keepScreenOn) { s.keepScreenOn = it } })
@@ -116,7 +120,7 @@ fun SettingsScreen(
 
                 // Gestures
                 SectionLabel("Gestures")
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(3)) {
                     SettingRow(Icons.Rounded.Pinch, Tints.Indigo, "Pinch to zoom", trailing = { GlassSwitch(s.pinchZoom) { s.pinchZoom = it } })
                     SettingRow(Icons.Rounded.TouchApp, Tints.Blue, "2-finger tap · Undo", trailing = { GlassSwitch(s.twoFingerUndo) { s.twoFingerUndo = it } })
                     SettingRow(Icons.Rounded.TouchApp, Tints.Teal, "3-finger tap · Redo", trailing = { GlassSwitch(s.threeFingerRedo) { s.threeFingerRedo = it } })
@@ -125,7 +129,7 @@ fun SettingsScreen(
 
                 // Wallpaper
                 SectionLabel("Wallpaper")
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(4)) {
                     SettingRow(Icons.Rounded.Wallpaper, Tints.Indigo, "Apply live wallpaper", onApplyWallpaper)
                     SettingRow(Icons.Rounded.Schedule, Tints.Teal, "Schedule", onSchedule)
                     if (hasLockscreen) SettingRow(Icons.Rounded.ScreenLockPortrait, Tints.Gray, "Stop lock screen sync", onClearLockscreen)
@@ -133,26 +137,31 @@ fun SettingsScreen(
 
                 // Partner
                 SectionLabel("Partner")
-                GlassGroup {
+                GlassGroup(Modifier.enterAnim(5)) {
                     if (isPaired) SettingRow(Icons.Rounded.LinkOff, Tints.Pink, "Unpair", { confirmUnpair = true }, titleColor = ErrorRed)
                     else SettingRow(Icons.Rounded.Favorite, Tints.Pink, "Pair with partner", onPair)
                 }
 
                 // System
                 SectionLabel("System")
-                GlassGroup {
-                    SettingRow(Icons.Rounded.Notifications, Tints.Red, "Permissions") {
-                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
-                    }
-                    SettingRow(Icons.Rounded.CleaningServices, Tints.Gray, "Clear previews") {
+                GlassGroup(Modifier.enterAnim(6)) {
+                    SettingRow(Icons.Rounded.Notifications, Tints.Red, "Permissions", onClick = onPermissions)
+                    var cleared by remember { mutableStateOf(false) }
+                    SettingRow(Icons.Rounded.CleaningServices, Tints.Gray, "Clear previews", onClick = {
                         CanvasRenderer.thumbFile(context, "x").parentFile?.listFiles()?.forEach { it.delete() }
-                    }
-                    SettingRow(Icons.Rounded.PrivacyTip, Tints.Blue, "Privacy") { legal = "privacy" }
-                    SettingRow(Icons.Rounded.Gavel, Tints.Gray, "Terms") { legal = "terms" }
+                        cleared = true
+                    }, trailing = {
+                        Crossfade(cleared, label = "cl") { done ->
+                            if (done) Icon(Icons.Rounded.CheckCircle, null, tint = SuccessGreen)
+                            else Icon(Icons.Rounded.ChevronRight, null, tint = c.textMuted)
+                        }
+                    })
+                    SettingRow(Icons.Rounded.PrivacyTip, Tints.Blue, "Privacy", onClick = { legal = "privacy" })
+                    SettingRow(Icons.Rounded.Gavel, Tints.Gray, "Terms", onClick = { legal = "terms" })
                 }
 
                 Text(
-                    "WallPaper 3.0", color = c.textMuted, fontSize = 12.sp,
+                    "WallPaper ${com.alancruse.wallpaper.BuildConfig.VERSION_NAME}", color = c.textMuted, fontSize = 12.sp,
                     modifier = Modifier.fillMaxWidth().padding(top = 24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,15 +84,15 @@ fun HomeScreen(
                     }
                 }
                 if (rooms.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState(isPaired, onPair, onGroups) }
-                items(rooms, key = { it.roomId }) { room ->
-                    CanvasTile(
+                itemsIndexed(rooms, key = { _, r -> r.roomId }) { i, room ->
+                    Box(Modifier.animateItem().enterAnim(i + 1)) { CanvasTile(
                         room = room,
                         isHome = room.roomId == homeRoomId,
                         isLock = room.roomId == lockRoomId,
                         thumbVersion = thumbVersion,
                         onClick = { onOpenCanvas(room) },
                         onLongClick = { actionsFor = room },
-                    )
+                    ) }
                 }
             }
         }
@@ -100,7 +101,7 @@ fun HomeScreen(
             // Floating dock
             Row(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 18.dp)
-                    .glass(CircleShape, strong = true).padding(6.dp),
+                    .enterAnim(2, rise = 60f).glass(CircleShape, strong = true).padding(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {

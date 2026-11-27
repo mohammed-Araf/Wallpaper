@@ -10,6 +10,12 @@ Draw together on a canvas that becomes your partner's / group's live wallpaper a
 - **Instant canvas switching** — switch rooms from the pill at the top of the editor without leaving it. Firebase disk persistence means previously opened canvases render immediately, even offline.
 - **Group roles** — owners can switch members to view-only; view-only members get a read-only editor.
 
+### Pairing
+
+After sign-in, a short permissions screen (notifications, scheduled switching, background sync) appears once. The pairing screen shows **your code as a QR** plus the 6-digit code; tap **Scan** to read your partner's QR, or type their code. Group join codes have QR codes too (create screen and member list) and a scan button on the join field. Scanning uses Google Play services' code scanner, so no camera permission is needed.
+
+**Developer account** — when signed in as the developer email set in `MainActivity.kt`, a developer icon appears on the pairing screen. It skips pairing and opens a simulated partner canvas stored only on this device (unpair from Settings to leave it).
+
 ### Gestures
 
 | Fingers | Gesture | Action |

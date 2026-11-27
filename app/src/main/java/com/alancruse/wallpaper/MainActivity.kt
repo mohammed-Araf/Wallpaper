@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,7 +36,7 @@ import com.alancruse.wallpaper.wallpaper.LiveWallpaperService
 import com.google.firebase.auth.FirebaseUser
 
 private enum class AppState {
-    LOADING, SIGNED_OUT, NEEDS_PAIRING, HOME, GROUP_SCREEN, GROUP_MANAGE, CANVAS, SETTINGS
+    LOADING, SIGNED_OUT, PERMISSIONS, NEEDS_PAIRING, HOME, GROUP_SCREEN, GROUP_MANAGE, CANVAS, SETTINGS
 }
 
 class MainActivity : ComponentActivity() {
@@ -58,6 +59,10 @@ class MainActivity : ComponentActivity() {
     private var homeRoomId by mutableStateOf<String?>(null)
     private var lockRoomId by mutableStateOf<String?>(null)
     private var thumbVersion by mutableIntStateOf(0)
+    private var afterPermissions by mutableStateOf(AppState.HOME)
+    private var permissionsFromSettings by mutableStateOf(false)
+
+    private val isDeveloper get() = currentUser?.email.equals(DEVELOPER_EMAIL, ignoreCase = true)
 
     private val signInLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -88,8 +93,6 @@ class MainActivity : ComponentActivity() {
         pairingPrefs = PairingPrefs(this)
         currentUser = googleAuthManager.getCurrentUser()
 
-        requestNotificationPermission()
-
         val user = currentUser
         if (user == null) {
             appState = AppState.SIGNED_OUT
@@ -103,6 +106,7 @@ class MainActivity : ComponentActivity() {
                 val c = com.alancruse.wallpaper.ui.theme.LocalWallpaperColors.current
                 val back: (() -> Unit)? = when (appState) {
                     AppState.GROUP_SCREEN, AppState.GROUP_MANAGE, AppState.SETTINGS -> ({ goHome() })
+                    AppState.PERMISSIONS -> if (permissionsFromSettings) ({ permissionsFromSettings = false; appState = AppState.SETTINGS }) else null
                     AppState.NEEDS_PAIRING -> if (pairingFromApp) ({ pairingFromApp = false; appState = AppState.HOME }) else null
                     else -> null
                 }
@@ -113,8 +117,8 @@ class MainActivity : ComponentActivity() {
                         targetState = appState,
                         transitionSpec = {
                             val forward = targetState.ordinal > initialState.ordinal
-                            (fadeIn(tween(260)) + slideInHorizontally(tween(320)) { if (forward) it / 6 else -it / 6 }) togetherWith
-                                (fadeOut(tween(200)) + slideOutHorizontally(tween(320)) { if (forward) -it / 6 else it / 6 })
+                            (fadeIn(tween(280)) + scaleIn(spring(0.8f, 300f), 0.96f) + slideInHorizontally(spring(0.85f, 320f)) { if (forward) it / 5 else -it / 5 }) togetherWith
+                                (fadeOut(tween(180)) + scaleOut(tween(260), 0.97f) + slideOutHorizontally(tween(300)) { if (forward) -it / 6 else it / 6 })
                         },
                         label = "nav"
                     ) { state ->
@@ -124,6 +128,15 @@ class MainActivity : ComponentActivity() {
                             }
 
                             AppState.SIGNED_OUT -> AuthScreen(onSignInClick = { signInLauncher.launch(googleAuthManager.getSignInIntent()) })
+
+                            AppState.PERMISSIONS -> PermissionsScreen(
+                                onDone = {
+                                    pairingPrefs.permissionsOnboarded = true
+                                    if (permissionsFromSettings) { permissionsFromSettings = false; appState = AppState.SETTINGS }
+                                    else appState = afterPermissions
+                                },
+                                onBack = if (permissionsFromSettings) ({ permissionsFromSettings = false; appState = AppState.SETTINGS }) else null
+                            )
 
                             AppState.NEEDS_PAIRING -> PairingScreen(
                                 currentUid = currentUser!!.uid,
@@ -136,7 +149,8 @@ class MainActivity : ComponentActivity() {
                                     appState = AppState.HOME
                                 },
                                 onSkipToGroups = { loadGroups(currentUser!!.uid); appState = AppState.GROUP_SCREEN },
-                                onBack = if (pairingFromApp) ({ pairingFromApp = false; appState = AppState.HOME }) else null
+                                onBack = if (pairingFromApp) ({ pairingFromApp = false; appState = AppState.HOME }) else null,
+                                onDeveloperBypass = if (isDeveloper) ({ enterDeveloperMode() }) else null
                             )
 
                             AppState.HOME -> HomeScreen(
@@ -198,7 +212,11 @@ class MainActivity : ComponentActivity() {
                                 onUnpair = {
                                     val uid = currentUser!!.uid
                                     val pUid = partnerUid ?: return@SettingsScreen
-                                    PairingManager(uid).unpair(pUid) {
+                                    val unpair: (() -> Unit) -> Unit = { done ->
+                                        if (pUid == DEV_PARTNER_UID) { pairingPrefs.developerPaired = false; done() }
+                                        else PairingManager(uid).unpair(pUid, done)
+                                    }
+                                    unpair {
                                         partnerUid = null
                                         pairingPrefs.clearCoupleOnly()
                                         refreshWallpaperIds()
@@ -214,10 +232,11 @@ class MainActivity : ComponentActivity() {
                                         pairingPrefs.clear()
                                         appState = AppState.SIGNED_OUT
                                     }
-                                    if (pUid != null) PairingManager(uid).unpair(pUid) { doSignOut() } else doSignOut()
+                                    if (pUid != null && pUid != DEV_PARTNER_UID) PairingManager(uid).unpair(pUid) { doSignOut() } else doSignOut()
                                 },
                                 onSchedule = { showSchedule = true },
                                 onApplyWallpaper = { launchWallpaperPicker() },
+                                onPermissions = { permissionsFromSettings = true; appState = AppState.PERMISSIONS },
                                 onClearLockscreen = {
                                     pairingPrefs.clearLockscreenWallpaper()
                                     com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.stop(this@MainActivity)
@@ -241,6 +260,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Developer account: pretend to be paired so the canvas can be used without a partner. */
+    private fun enterDeveloperMode() {
+        val uid = currentUser?.uid ?: return
+        pairingPrefs.developerPaired = true
+        partnerUid = DEV_PARTNER_UID
+        pairingPrefs.savePairing(uid, DEV_PARTNER_UID)
+        refreshWallpaperIds()
+        pairingFromApp = false
+        loadGroups(uid)
+        appState = AppState.HOME
+        Toast.makeText(this, "Connected (simulated)", Toast.LENGTH_SHORT).show()
+    }
+
     private fun goHome() {
         currentUser?.let { loadGroups(it.uid) }
         appState = AppState.HOME
@@ -254,7 +286,7 @@ class MainActivity : ComponentActivity() {
     private fun rooms(): List<CanvasRoom> = buildList {
         val uid = currentUser?.uid
         val p = partnerUid
-        if (uid != null && p != null) add(CanvasRoom(if (uid < p) "${uid}_$p" else "${p}_$uid", "couple", "Partner"))
+        if (uid != null && p != null) add(CanvasRoom(if (uid < p) "${uid}_$p" else "${p}_$uid", "couple", if (p == DEV_PARTNER_UID) "Dev canvas" else "Partner"))
         groups.forEach { g -> add(CanvasRoom(g.roomId, "group", g.name, g.memberCount, g.joinCode, g.groupId)) }
     }
 
@@ -270,7 +302,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPairingAndLoadGroups(uid: String) {
-        PairingManager(uid).checkExistingPairing { existingPartner ->
+        PairingManager(uid).checkExistingPairing { serverPartner ->
+            val existingPartner = serverPartner ?: if (isDeveloper && pairingPrefs.developerPaired) DEV_PARTNER_UID else null
             if (existingPartner != null) {
                 partnerUid = existingPartner
                 pairingPrefs.savePairing(uid, existingPartner)
@@ -281,11 +314,11 @@ class MainActivity : ComponentActivity() {
                 com.alancruse.wallpaper.wallpaper.LockscreenWallpaperService.start(this)
             }
             // Go to home if paired or has groups, otherwise needs pairing
-            if (existingPartner != null || pairingPrefs.getGroupRoomIds().isNotEmpty()) {
-                appState = AppState.HOME
-            } else {
-                appState = AppState.NEEDS_PAIRING
-            }
+            val next = if (existingPartner != null || pairingPrefs.getGroupRoomIds().isNotEmpty()) AppState.HOME else AppState.NEEDS_PAIRING
+            if (!pairingPrefs.permissionsOnboarded && !AppPermissions.allGranted(this)) {
+                afterPermissions = next
+                appState = AppState.PERMISSIONS
+            } else appState = next
         }
     }
 
@@ -324,14 +357,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.POST_NOTIFICATIONS
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
 }
+
+private const val DEVELOPER_EMAIL = "mdaraf26@gmail.com"
+private const val DEV_PARTNER_UID = "dev-simulated-partner"

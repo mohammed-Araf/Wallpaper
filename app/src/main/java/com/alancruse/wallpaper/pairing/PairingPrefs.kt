@@ -153,6 +153,14 @@ class PairingPrefs(context: Context) {
         get() = prefs.getString(KEY_THEME_MODE, "oled") ?: "oled"
         set(value) = prefs.edit().putString(KEY_THEME_MODE, value).apply()
 
+    var permissionsOnboarded: Boolean
+        get() = prefs.getBoolean("permissions_onboarded", false)
+        set(value) = prefs.edit().putBoolean("permissions_onboarded", value).apply()
+
+    var developerPaired: Boolean
+        get() = prefs.getBoolean("developer_paired", false)
+        set(value) = prefs.edit().putBoolean("developer_paired", value).apply()
+
     // ── Clear ──
 
     fun clear() {
