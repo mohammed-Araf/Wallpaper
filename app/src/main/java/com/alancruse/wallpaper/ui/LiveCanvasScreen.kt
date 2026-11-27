@@ -200,6 +200,7 @@ fun LiveCanvasScreen(
     // Animated / live stickers: frame clock only while some are on the canvas.
     var frameMs by remember { mutableLongStateOf(0L) }
     val hasLive = sync.sharedStickers.any { it.kind.isNotEmpty() }
+    LaunchedEffect(Unit) { StickerArt.use24h = android.text.format.DateFormat.is24HourFormat(context) }
     LaunchedEffect(hasLive) { if (hasLive) while (true) withFrameMillis { frameMs = it } }
     val liveWatcher = remember(sync) { LiveBoard.Watcher(sync.roomId) }
     LaunchedEffect(sync) { snapshotFlow { sync.sharedStickers.toList() }.collect { liveWatcher.update(it) } }
@@ -1037,6 +1038,7 @@ private val FallbackEmoji = mapOf(
     "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
     "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
     "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆", "w:me" to "🧍",
+    "w:clock" to "🕒", "w:analog" to "🕰️",
 )
 
 /** Dress-up sheet for the status avatar, with a live preview of every scene. */

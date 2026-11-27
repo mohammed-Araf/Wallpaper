@@ -129,7 +129,8 @@ object LockSync {
             @Suppress("DEPRECATION")
             (app.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
             val bmp = Bitmap.createBitmap(dm.widthPixels, dm.heightPixels, Bitmap.Config.ARGB_8888)
-            CanvasRenderer.drawOnCanvas(Canvas(bmp), bgColor, strokes, stickers, texts, images, roomId = roomId)
+            // A still image can't keep time, and the lock screen shows its own clock.
+            CanvasRenderer.drawOnCanvas(Canvas(bmp), bgColor, strokes, stickers.filterNot { com.alancruse.wallpaper.live.StickerKinds.isClock(it.kind) }, texts, images, roomId = roomId)
             WallpaperManager.getInstance(app).setBitmap(bmp, null, true, WallpaperManager.FLAG_LOCK)
             bmp.recycle()
         } catch (e: Exception) { Log.e(TAG, "Lock render failed", e) }

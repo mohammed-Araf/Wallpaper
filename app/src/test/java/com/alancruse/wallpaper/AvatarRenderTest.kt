@@ -59,4 +59,21 @@ class AvatarRenderTest {
         }
         FileOutputStream(File(out, "heads.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
+
+    @Test
+    fun renderClocks() {
+        val out = File(System.getProperty("avatar.out") ?: "build/avatar").apply { mkdirs() }
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Kolkata"))
+        // 29 Nov 2026: 10:09:30 and 21:47:12 IST
+        val times = listOf("day" to 1795927170000L, "night" to 1795969032000L)
+        val bmp = Bitmap.createBitmap(4 * 300, 2 * 240, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); c.drawColor(Color.parseColor("#444444"))
+        for ((row, h24) in listOf(false, true).withIndex()) for ((col, kt) in listOf("w:clock", "w:analog").flatMap { k -> times.map { k to it } }.withIndex()) {
+            StickerArt.use24h = h24
+            StickerArt.clockNow = { kt.second.second }
+            val sz = if (kt.first == "w:clock") 160f else 190f
+            StickerArt.draw(c, StickerElement(kind = kt.first, x = 150f + col * 300f, y = 120f + row * 240f + sz * 0.35f, size = sz), 0L, null, null)
+        }
+        FileOutputStream(File(out, "clocks.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 }

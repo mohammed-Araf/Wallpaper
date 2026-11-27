@@ -41,6 +41,8 @@ object StickerArt {
         "w:board" -> 118f to 80f
         "w:dist" -> 112f to 88f
         "w:me" -> 100f to 82f
+        "w:clock" -> 82f to 60f
+        "w:analog" -> 54f to 56f
         else -> 50f to 50f
     }
 
@@ -77,6 +79,8 @@ object StickerArt {
                 "w:board" -> { billboard(c, s, src?.stats(st.owner)); plate(c, st.label, -74f) }
                 "w:dist" -> distance(c, s, src, roomId)
                 "w:me" -> me(c, s, st, src?.stats(st.owner))
+                "w:clock" -> digitalClock(c)
+                "w:analog" -> analogClock(c)
                 else -> { fill.color = INK; c.drawCircle(0f, 0f, 20f, fill) }
             }
         } finally { c.restore() }
@@ -642,6 +646,116 @@ object StickerArt {
             avatar(c, px[i], y, 12.5f, p.name, avatarCols[i % avatarCols.size])
             chunky(c, if (uid == me) "you" else p.name.ifBlank { "friend" }.take(7), px[i], y + 24f, 8.5f)
         }
+    }
+
+    // ═════════ Clocks ("w:clock", "w:analog") ═════════
+    //
+    // The viewer's own local time, so each phone shows its own clock.
+
+    /** Follows the phone's 12/24-hour setting; set by whoever hosts the canvas. */
+    @Volatile var use24h = false
+    /** Wall-clock source (swapped in tests). */
+    internal var clockNow: () -> Long = { System.currentTimeMillis() }
+    private val cal = java.util.Calendar.getInstance()
+    private var clockKey = Long.MIN_VALUE
+    private var clock24 = false
+    private var hourText = ""
+    private var minText = ""
+    private var dateText = ""
+    private val DAYS = arrayOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+    private val MONTHS = arrayOf("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+    /** Milliseconds since local midnight. Labels are rebuilt at most once a minute. */
+    private fun localMs(): Long {
+        val now = clockNow()
+        val tz = java.util.TimeZone.getDefault()
+        val local = now + tz.getOffset(now)
+        val day = ((local % 86_400_000L) + 86_400_000L) % 86_400_000L
+        val minute = Math.floorDiv(local, 60_000L)
+        if (minute != clockKey || clock24 != use24h) {
+            clockKey = minute; clock24 = use24h
+            cal.timeZone = tz; cal.timeInMillis = now
+            val h24 = (day / 3_600_000L).toInt(); val m = ((day / 60_000L) % 60).toInt()
+            hourText = if (use24h) "%02d".format(h24) else ((h24 + 11) % 12 + 1).toString()
+            minText = "%02d".format(m)
+            dateText = "${DAYS[cal.get(java.util.Calendar.DAY_OF_WEEK) - 1]} · ${cal.get(java.util.Calendar.DAY_OF_MONTH)} ${MONTHS[cal.get(java.util.Calendar.MONTH)]}"
+        }
+        return day
+    }
+
+    private fun digitalClock(c: Canvas) {
+        val ms = localMs()
+        val h24 = (ms / 3_600_000L).toInt()
+        val night = h24 >= 19 || h24 < 6
+        card(c, 160f, 108f, if (night) 0xFF4C3FA8.toInt() else 0xFF38A3F5.toInt())
+        // Sun or moon in the corner
+        if (night) {
+            aux.reset(); aux.addCircle(-58f, -32f, 9f, Path.Direction.CW)
+            under.reset(); under.addCircle(-53f, -36f, 8f, Path.Direction.CW)
+            aux.op(under, Path.Op.DIFFERENCE)
+            toon(c, aux, 0xFFFFE9A8.toInt(), depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+        } else {
+            val a0 = (ms % 20_000L) / 20_000f * 360f
+            line.strokeWidth = 2.5f; line.color = 0xFFFFD43B.toInt()
+            for (i in 0 until 8) {
+                val a = Math.toRadians((a0 + i * 45f).toDouble())
+                c.drawLine(-58f + cos(a).toFloat() * 10f, -32f + sin(a).toFloat() * 10f, -58f + cos(a).toFloat() * 14f, -32f + sin(a).toFloat() * 14f, line)
+            }
+            line.color = INK
+            circle(c, -58f, -32f, 7f, 0xFFFFD43B.toInt(), depth = 2f)
+        }
+        if (!use24h) chunky(c, if (h24 < 12) "AM" else "PM", 60f, -26f, 12f, 0xFFFFF3B0.toInt())
+        val y = 16f
+        // Centre "h:mm" as a group so a one-digit hour doesn't sit off to the right.
+        txt.textSize = 46f
+        val x0 = (txt.measureText(hourText) - txt.measureText(minText)) / 2f
+        chunky(c, hourText, x0 - 7f, y, 46f, align = Paint.Align.RIGHT)
+        chunky(c, minText, x0 + 7f, y, 46f, align = Paint.Align.LEFT)
+        val on = ms % 1000L < 500L
+        chunky(c, ":", x0, y - 3f, 40f, alpha = if (on) 255 else 70)
+        chunky(c, dateText, 0f, 42f, 12.5f, 0xFFE8F4FF.toInt())
+    }
+
+    private fun analogClock(c: Canvas) {
+        val ms = localMs()
+        aux.reset(); aux.addCircle(0f, 0f, 46f, Path.Direction.CW)
+        toon(c, aux, 0xFFFF7A59.toInt(), depth = 7f, stroke = 5f, gloss = false)
+        // Face
+        fill.color = 0xFFFFF8EC.toInt(); c.drawCircle(0f, 0f, 37f, fill)
+        line.strokeWidth = 3.5f; line.color = INK; c.drawCircle(0f, 0f, 37f, line)
+        for (i in 0 until 60) {
+            val a = i * PI / 30
+            val major = i % 5 == 0
+            if (major && i % 15 == 0) continue
+            val r0 = if (major) 29f else 32.5f
+            line.strokeWidth = if (major) 3f else 1.4f
+            c.drawLine(sin(a).toFloat() * r0, -cos(a).toFloat() * r0, sin(a).toFloat() * 34f, -cos(a).toFloat() * 34f, line)
+        }
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textSize = 11f; txt.textAlign = Paint.Align.CENTER
+        val nr = 27f
+        c.drawText("12", 0f, -nr + 8f, txt); c.drawText("6", 0f, nr, txt)
+        c.drawText("3", nr - 2f, 4f, txt); c.drawText("9", -nr + 2f, 4f, txt)
+        // Hands: hour and minute glide, the second hand sweeps smoothly
+        val sec = (ms % 60_000L) / 1000f
+        val min = (ms % 3_600_000L) / 60_000f
+        val hr = (ms % 43_200_000L) / 3_600_000f
+        fun hand(deg: Float, len: Float, w: Float, col: Int, tail: Float = 0f) {
+            val a = Math.toRadians(deg.toDouble())
+            val dx = sin(a).toFloat(); val dy = -cos(a).toFloat()
+            line.color = INK; line.strokeWidth = w + 3.5f
+            c.drawLine(-dx * tail, -dy * tail, dx * len, dy * len, line)
+            line.color = col; line.strokeWidth = w
+            c.drawLine(-dx * tail, -dy * tail, dx * len, dy * len, line)
+        }
+        hand(hr * 30f, 18f, 4.5f, 0xFF4C3FA8.toInt())
+        hand(min * 6f, 27f, 3.5f, 0xFF38A3F5.toInt())
+        val sa = Math.toRadians((sec * 6f).toDouble())
+        line.color = 0xFFE53950.toInt(); line.strokeWidth = 1.8f
+        c.drawLine(-sin(sa).toFloat() * 8f, cos(sa).toFloat() * 8f, sin(sa).toFloat() * 31f, -cos(sa).toFloat() * 31f, line)
+        line.color = INK
+        circle(c, 0f, 0f, 3.6f, 0xFFE53950.toInt(), depth = 1f)
+        // Glass shine
+        fill.color = 0x40FFFFFF; c.drawOval(-26f, -34f, 22f, -14f, fill)
     }
 
     // ═════════ Status avatar ("w:me") ═════════

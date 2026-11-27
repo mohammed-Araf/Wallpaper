@@ -63,10 +63,12 @@ data class Presence(
 
 object StickerKinds {
     val animated = listOf("a:heart", "a:star", "a:fire", "a:sun", "a:moon", "a:ghost", "a:party", "a:rainbow", "a:love")
-    val widgets = listOf("w:me", "w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
+    val widgets = listOf("w:me", "w:clock", "w:analog", "w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
 
     fun isWidget(k: String) = k.startsWith("w:")
-    fun needsStats(k: String) = isWidget(k) && k != "w:dist"
+    /** Plain clocks: the viewer's own local time, no data shared. */
+    fun isClock(k: String) = k == "w:clock" || k == "w:analog"
+    fun needsStats(k: String) = isWidget(k) && k != "w:dist" && !isClock(k)
     /** The avatar that acts out what its owner is doing. */
     fun needsStatus(k: String) = k == "w:me"
     fun needsActivity(k: String) = needsSteps(k) || needsStatus(k)
