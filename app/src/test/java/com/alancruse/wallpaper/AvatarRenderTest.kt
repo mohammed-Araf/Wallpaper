@@ -76,4 +76,28 @@ class AvatarRenderTest {
         }
         FileOutputStream(File(out, "clocks.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
+
+    @Test
+    fun renderCountdowns() {
+        val out = File(System.getProperty("avatar.out") ?: "build/avatar").apply { mkdirs() }
+        val now = 1795927170000L
+        StickerArt.clockNow = { now }
+        val d = 86_400_000L
+        val cases = listOf(
+            Triple("Until we meet", 0, now + 12 * d + 4 * 3_600_000L + 22 * 60_000L),
+            Triple("Sneha's birthday", 1, now + d),
+            Triple("Exams over", 2, now + 5 * 3_600_000L + 7 * 60_000L + 9_000L),
+            Triple("Goa trip", 3, now - 3 * 3_600_000L),
+            Triple("Anniversary", 0, now - 3 * d),
+            Triple("", 1, 0L),
+        )
+        val bmp = Bitmap.createBitmap(3 * 320, 2 * 240, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); c.drawColor(Color.parseColor("#444444"))
+        cases.forEachIndexed { i, (title, icon, until) ->
+            val sz = 150f
+            StickerArt.draw(c, StickerElement(kind = "w:countdown", label = title, look = "i$icon", until = until,
+                x = 160f + (i % 3) * 320f, y = 120f + (i / 3) * 240f + sz * 0.35f, size = sz), 700L, null, null)
+        }
+        FileOutputStream(File(out, "countdowns.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 }

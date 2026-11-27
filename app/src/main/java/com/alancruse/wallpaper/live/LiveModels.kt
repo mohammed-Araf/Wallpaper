@@ -63,12 +63,16 @@ data class Presence(
 
 object StickerKinds {
     val animated = listOf("a:heart", "a:star", "a:fire", "a:sun", "a:moon", "a:ghost", "a:party", "a:rainbow", "a:love")
-    val widgets = listOf("w:me", "w:clock", "w:analog", "w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
+    val widgets = listOf("w:me", "w:clock", "w:analog", "w:countdown", "w:dist", "w:steps", "w:km", "w:speed", "w:steps_km", "w:speed_km", "w:board")
 
     fun isWidget(k: String) = k.startsWith("w:")
     /** Plain clocks: the viewer's own local time, no data shared. */
     fun isClock(k: String) = k == "w:clock" || k == "w:analog"
-    fun needsStats(k: String) = isWidget(k) && k != "w:dist" && !isClock(k)
+    /** Counts down to a date everyone in the room shares (StickerElement.until). */
+    fun isCountdown(k: String) = k == "w:countdown"
+    /** Drawn from the viewer's clock, so a still lock-screen image would go stale. */
+    fun ticksLocally(k: String) = isClock(k) || isCountdown(k)
+    fun needsStats(k: String) = isWidget(k) && k != "w:dist" && !ticksLocally(k)
     /** The avatar that acts out what its owner is doing. */
     fun needsStatus(k: String) = k == "w:me"
     fun needsActivity(k: String) = needsSteps(k) || needsStatus(k)

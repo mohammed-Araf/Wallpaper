@@ -43,6 +43,7 @@ object StickerArt {
         "w:me" -> 100f to 82f
         "w:clock" -> 82f to 60f
         "w:analog" -> 54f to 56f
+        "w:countdown" -> 94f to 64f
         else -> 50f to 50f
     }
 
@@ -81,6 +82,7 @@ object StickerArt {
                 "w:me" -> me(c, s, st, src?.stats(st.owner))
                 "w:clock" -> digitalClock(c)
                 "w:analog" -> analogClock(c)
+                "w:countdown" -> countdown(c, s, st)
                 else -> { fill.color = INK; c.drawCircle(0f, 0f, 20f, fill) }
             }
         } finally { c.restore() }
@@ -756,6 +758,68 @@ object StickerArt {
         circle(c, 0f, 0f, 3.6f, 0xFFE53950.toInt(), depth = 1f)
         // Glass shine
         fill.color = 0x40FFFFFF; c.drawOval(-26f, -34f, 22f, -14f, fill)
+    }
+
+    // ═════════ Countdown ("w:countdown") ═════════
+    //
+    // Counts down to StickerElement.until; the title is the sticker's label and the
+    // icon/colour theme is in `look` ("i0".."i3").
+
+    val COUNTDOWN_ICONS = arrayOf("Love", "Party", "Star", "Trip")
+    private val countdownColors = intArrayOf(0xFFFF5C8A.toInt(), 0xFFFF9F43.toInt(), 0xFF8B5CF6.toInt(), 0xFF22B8CF.toInt())
+
+    fun countdownIconOf(look: String) = Regex("i(\\d)").find(look)?.groupValues?.get(1)?.toInt()?.coerceIn(0, 3) ?: 0
+
+    /** The theme icon in a ~44-unit box centred on (0, 0) — also used by the picker. */
+    fun countdownIcon(c: Canvas, icon: Int, timeMs: Long) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        val k = when (icon) { 1 -> 0.6f; 3 -> 0.36f; else -> 0.5f }
+        c.save(); c.scale(k, k)
+        when (icon) { 1 -> party(c, s); 2 -> star(c, s); 3 -> rainbow(c, s); else -> heart(c, s) }
+        c.restore()
+    }
+
+    private fun countdown(c: Canvas, s: Float, st: StickerElement) {
+        val icon = countdownIconOf(st.look)
+        val left = st.until - clockNow()
+        val here = st.until > 0 && left <= 0 && left > -86_400_000L
+        if (here) { c.save(); c.rotate(sin(s * 6f) * 2.5f) }
+        card(c, 184f, 120f, countdownColors[icon])
+        // Icon on the left, bobbing
+        c.save(); c.translate(-58f, 4f + sin(s * 2.2f) * 2f)
+        countdownIcon(c, icon, (s * 1000).toLong()); c.restore()
+        val tx = 22f
+        val title = st.label.trim().ifEmpty { "Countdown" }
+        chunky(c, title, tx, -30f, 14f, 0xFFFFF3B0.toInt(), maxW = 112f)
+        val d = 86_400_000L; val h = 3_600_000L; val m = 60_000L
+        when {
+            st.until <= 0L -> chunky(c, "Set a date", tx, 12f, 20f, maxW = 112f)
+            here -> {
+                chunky(c, "It's here!", tx, 14f, 26f, maxW = 112f)
+                for (i in 0 until 10) {
+                    val ph = (s * 0.6f + i * 0.1f) % 1f
+                    val a = i * 36f * PI.toFloat() / 180f
+                    fill.color = countdownColors[(i + 1) % 4]; fill.alpha = ((1f - ph) * 255).toInt()
+                    c.drawCircle(tx + cos(a) * (20f + ph * 50f), 6f + sin(a) * (12f + ph * 30f), 3f, fill)
+                }
+                fill.alpha = 255
+            }
+            left <= 0L -> {
+                val ago = (-left) / d
+                chunky(c, "$ago", tx, 16f, 40f, maxW = 112f)
+                chunky(c, if (ago == 1L) "day ago" else "days ago", tx, 40f, 13f)
+            }
+            left >= d -> {
+                val days = left / d
+                chunky(c, "$days", tx, 16f, 44f, maxW = 112f)
+                chunky(c, "${if (days == 1L) "day" else "days"} · ${(left % d) / h}h ${(left % h) / m}m", tx, 42f, 13f, maxW = 112f)
+            }
+            else -> {
+                chunky(c, "%02d:%02d:%02d".format(left / h, (left % h) / m, (left % m) / 1000), tx, 12f, 30f, maxW = 112f)
+                chunky(c, "to go", tx, 38f, 13f)
+            }
+        }
+        if (here) c.restore()
     }
 
     // ═════════ Status avatar ("w:me") ═════════

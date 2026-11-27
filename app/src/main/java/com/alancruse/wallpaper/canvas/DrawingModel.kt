@@ -36,6 +36,8 @@ data class StickerElement(
     val label: String = "",
     /** Avatar look for the status sticker (see AvatarLook), e.g. "g1s2h0c3o4d0r0". */
     val look: String = "",
+    /** Countdown sticker: the moment it counts down to (epoch ms, 0 = not set). */
+    val until: Long = 0L,
     val timestamp: Long = System.currentTimeMillis()
 )
 

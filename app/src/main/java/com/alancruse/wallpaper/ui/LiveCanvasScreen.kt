@@ -177,6 +177,8 @@ fun LiveCanvasScreen(
     var plateEdit by remember { mutableStateOf<Pair<Int, String>?>(null) }
     // Status avatar look being edited: sticker index (null = about to add one) + look
     var avatarEdit by remember { mutableStateOf<Pair<Int?, AvatarLook>?>(null) }
+    // Countdown being set up: index (null = new) and its draft.
+    var countdownEdit by remember { mutableStateOf<Pair<Int?, StickerElement>?>(null) }
     val avatarPrefs = remember { context.getSharedPreferences("avatar", android.content.Context.MODE_PRIVATE) }
     var uploading by remember { mutableStateOf(false) }
 
@@ -532,6 +534,11 @@ fun LiveCanvasScreen(
                                         ) {
                                             // Tap my own status avatar → change how it looks
                                             avatarEdit = g.second to AvatarLook.decode(sync.sharedStickers[g.second].look)
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.isCountdown(it.kind) } == true
+                                        ) {
+                                            // Tap a countdown → change its title, date or icon
+                                            countdownEdit = g.second to sync.sharedStickers[g.second]
                                         } else if (!draggingEl && g.first == ElType.IMAGE) {
                                             sync.sharedImages.getOrNull(g.second)?.let { img ->
                                                 sync.updateImage(g.second, img.copy(style = (img.style + 1).mod(CanvasRenderer.IMAGE_STYLES)))
@@ -886,6 +893,15 @@ fun LiveCanvasScreen(
                                 avatarEdit = null to AvatarLook.decode(avatarPrefs.getString("look", "") ?: "")
                                 return@StickerMarket
                             }
+                            if (StickerKinds.isCountdown(k)) {
+                                showStickers = false
+                                val cal = java.util.Calendar.getInstance().apply {
+                                    add(java.util.Calendar.DAY_OF_YEAR, 7); set(java.util.Calendar.HOUR_OF_DAY, 9)
+                                    set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+                                }
+                                countdownEdit = null to StickerElement(kind = k, until = cal.timeInMillis, look = "i0")
+                                return@StickerMarket
+                            }
                             val p = visibleCenter()
                             val widget = StickerKinds.isWidget(k)
                             sync.pushSticker(StickerElement(
@@ -918,6 +934,23 @@ fun LiveCanvasScreen(
                         requestLivePerms("w:me")
                     } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(look = look.encode())) }
                     haptic(Haptic.Confirm); avatarEdit = null
+                }
+            }
+
+            GlassSheet(countdownEdit != null, { countdownEdit = null }) {
+                val ce = countdownEdit
+                if (ce != null) CountdownBuilder(ce.second, isNew = ce.first == null) { title, until, icon ->
+                    val idx = ce.first
+                    if (idx == null) {
+                        val p = visibleCenter()
+                        sync.pushSticker(StickerElement(
+                            emoji = FallbackEmoji["w:countdown"] ?: "⏳", kind = "w:countdown",
+                            owner = FirebaseAuth.getInstance().currentUser?.uid ?: "",
+                            label = title, look = "i$icon", until = until, x = p.x, y = p.y, size = 170f / viewScale
+                        ))
+                        tool = Tool.MOVE
+                    } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(label = title, look = "i$icon", until = until)) }
+                    haptic(Haptic.Confirm); countdownEdit = null
                 }
             }
 
@@ -1038,8 +1071,96 @@ private val FallbackEmoji = mapOf(
     "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
     "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
     "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆", "w:me" to "🧍",
-    "w:clock" to "🕒", "w:analog" to "🕰️",
+    "w:clock" to "🕒", "w:analog" to "🕰️", "w:countdown" to "⏳",
 )
+
+/** Set up a countdown: title, date and time, and an icon/colour theme. */
+@Composable
+private fun CountdownBuilder(initial: StickerElement, isNew: Boolean, onSave: (title: String, until: Long, icon: Int) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    val context = LocalContext.current
+    var title by remember { mutableStateOf(initial.label) }
+    var until by remember { mutableLongStateOf(initial.until) }
+    var icon by remember { mutableIntStateOf(StickerArt.countdownIconOf(initial.look)) }
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val cal = remember(until) { java.util.Calendar.getInstance().apply { timeInMillis = until } }
+    val is24 = remember { android.text.format.DateFormat.is24HourFormat(context) }
+    val dateText = remember(until) { java.text.SimpleDateFormat("EEE, d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(until)) }
+    val timeText = remember(until, is24) { java.text.SimpleDateFormat(if (is24) "HH:mm" else "h:mm a", java.util.Locale.getDefault()).format(java.util.Date(until)) }
+
+    @Composable
+    fun Label(text: String) = Text(text, color = c.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp))
+
+    @Composable
+    fun Pick(modifier: Modifier, iconV: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit) {
+        Row(
+            modifier.height(52.dp).clip(RoundedCornerShape(16.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                .clickable { haptic(Haptic.Tick); onClick() }.padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(iconV, null, tint = c.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(text, color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.6f).clip(RoundedCornerShape(22.dp)).background(c.textPrimary.copy(alpha = 0.05f))) {
+            Canvas(Modifier.fillMaxSize()) {
+                val (hw, hh) = StickerArt.halfSize("w:countdown")
+                val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
+                val sz = u * 100f
+                val st = StickerElement(kind = "w:countdown", label = title, look = "i$icon", until = until,
+                    x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, null, null)
+            }
+        }
+        Label("What are you counting down to?")
+        GlassTextField(title, { if (it.length <= 20) title = it }, placeholder = "Until we meet", leadingIcon = Icons.Rounded.Edit)
+        Label("When")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Pick(Modifier.weight(1.4f), Icons.Rounded.CalendarMonth, dateText) {
+                android.app.DatePickerDialog(context, { _, y, mo, d ->
+                    until = (cal.clone() as java.util.Calendar).apply { set(y, mo, d) }.timeInMillis
+                }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH)).show()
+            }
+            Pick(Modifier.weight(1f), Icons.Rounded.Schedule, timeText) {
+                android.app.TimePickerDialog(context, { _, h, mi ->
+                    until = (cal.clone() as java.util.Calendar).apply { set(java.util.Calendar.HOUR_OF_DAY, h); set(java.util.Calendar.MINUTE, mi); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }.timeInMillis
+                }, cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE), is24).show()
+            }
+        }
+        Label("Icon")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StickerArt.COUNTDOWN_ICONS.forEachIndexed { i, name ->
+                val sel = i == icon
+                Column(
+                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) c.accent.copy(alpha = 0.18f) else c.textPrimary.copy(alpha = 0.05f))
+                        .border(if (sel) 2.dp else 0.dp, if (sel) c.accent else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable { haptic(Haptic.Tick); icon = i }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Canvas(Modifier.size(44.dp)) {
+                        val k = size.minDimension / 50f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                        StickerArt.countdownIcon(nc, i, t)
+                        nc.restore()
+                    }
+                    Text(name, color = c.textSecondary, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Text(
+            "Everyone in this canvas sees the same countdown and can tap it to change it.",
+            color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)
+        )
+        AccentButton({ onSave(title.trim(), until, icon) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Add sticker" else "Save")
+    }
+}
 
 /** Dress-up sheet for the status avatar, with a live preview of every scene. */
 @Composable
@@ -1164,6 +1285,7 @@ private fun StickerMarket(kinds: List<String>, columns: Int, onPick: (String) ->
     val c = LocalWallpaperColors.current
     var t by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val sampleUntil = remember { System.currentTimeMillis() + 12 * 86_400_000L + 4 * 3_600_000L + 22 * 60_000L }
     LazyVerticalGrid(
         GridCells.Fixed(columns), Modifier.fillMaxWidth().heightIn(max = 380.dp),
         contentPadding = PaddingValues(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1179,7 +1301,9 @@ private fun StickerMarket(kinds: List<String>, columns: Int, onPick: (String) ->
                     val (hw, hh) = StickerArt.halfSize(k)
                     val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
                     val sz = u * 100f
-                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                    val cd = StickerKinds.isCountdown(k)
+                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz,
+                        label = if (cd) "Until we meet" else "", until = if (cd) sampleUntil else 0L)
                     StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, StickerArt.Preview, "preview")
                 }
             }
