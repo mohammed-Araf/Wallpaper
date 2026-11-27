@@ -24,6 +24,9 @@ object LiveBoard : LiveSource {
     override val myUid: String? get() = FirebaseAuth.getInstance().currentUser?.uid
     override fun stats(uid: String) = stats[uid]
     override fun presence(roomId: String) = presence[roomId] ?: emptyMap()
+    private val nudges = ConcurrentHashMap<String, Long>()
+    override fun nudgedAt(uid: String) = nudges[uid] ?: 0L
+    fun putNudge(from: String, at: Long) { nudges[from] = at; changed() }
 
     fun observe(f: () -> Unit) { observers.add(f) }
     fun unobserve(f: () -> Unit) { observers.remove(f) }

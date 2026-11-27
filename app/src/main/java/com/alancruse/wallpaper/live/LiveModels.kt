@@ -87,6 +87,8 @@ interface LiveSource {
     val myUid: String?
     fun stats(uid: String): LiveStats?
     fun presence(roomId: String): Map<String, Presence>
+    /** When [uid] last nudged me (epoch ms), so their avatar can wave on my screen. */
+    fun nudgedAt(uid: String): Long = 0L
 }
 
 fun haversineKm(a: Presence, b: Presence): Double {

@@ -28,7 +28,7 @@ class AvatarRenderTest {
     fun renderScenes() {
         val outDir = System.getProperty("avatar.out") ?: "build/avatar"
         val out = File(outDir).apply { mkdirs() }
-        val scenes = listOf(Status.PHONE, Status.RIDE, Status.CYCLE, Status.WALK, Status.MUSIC, Status.CHARGE, Status.SLEEP, Status.AWAY, Status.GHOST, Status.NONE)
+        val scenes = listOf(Status.PHONE, Status.RIDE, Status.CYCLE, Status.WALK, Status.MUSIC, Status.CHARGE, Status.SLEEP, Status.AWAY, Status.GHOST, "nudge", Status.NONE)
         val looks = listOf(
             "boy" to AvatarLook(gender = 0, skin = 2, hair = 1, hairColor = 0, outfit = 4, dark = 0, ride = 0),
             "girl" to AvatarLook(gender = 1, skin = 1, hair = 1, hairColor = 1, outfit = 0, dark = 1, ride = 1),
@@ -44,6 +44,7 @@ class AvatarRenderTest {
                     return LiveStats(status = sc, statusAt = now - 17 * 60_000L, updatedAt = now, battery = if (sc == Status.CHARGE) 12 else 78, charging = sc == Status.CHARGE)
                 }
                 override fun presence(roomId: String) = emptyMap<String, Presence>()
+                override fun nudgedAt(uid: String) = if (sc == "nudge") System.currentTimeMillis() else 0L
             }
             val sz = 300f
             val st = StickerElement(kind = "w:me", owner = "me", label = if (tag == "boy") "Araf" else "Sneha", look = look.encode(), x = 320f, y = 270f + sz * 0.35f, size = sz)

@@ -535,6 +535,15 @@ fun LiveCanvasScreen(
                                             // Tap my own status avatar → change how it looks
                                             avatarEdit = g.second to AvatarLook.decode(sync.sharedStickers[g.second].look)
                                         } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.needsStatus(it.kind) && it.owner.isNotEmpty() } == true
+                                        ) {
+                                            // Tap someone else's avatar → nudge them
+                                            val other = sync.sharedStickers[g.second]
+                                            val who = other.label.ifBlank { "them" }
+                                            if (LiveTracker.nudge(sync.roomId, other.owner)) {
+                                                haptic(Haptic.Confirm); Toast.makeText(context, "Nudged $who 👋", Toast.LENGTH_SHORT).show()
+                                            } else Toast.makeText(context, "You just nudged $who. Give it a moment", Toast.LENGTH_SHORT).show()
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
                                             sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.isCountdown(it.kind) } == true
                                         ) {
                                             // Tap a countdown → change its title, date or icon

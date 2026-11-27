@@ -48,6 +48,7 @@ object LiveTracker {
 
     // ── What my stickers need, per room ──
     private val roomListeners = HashMap<String, Pair<DatabaseReference, ValueEventListener>>()
+    private val nudgeListeners = HashMap<String, Pair<DatabaseReference, ValueEventListener>>()
     private data class Needs(val dist: Boolean, val steps: Boolean, val location: Boolean, val status: Boolean)
     private val roomNeeds = HashMap<String, Needs>()
     private val distRooms get() = roomNeeds.filterValues { it.dist }.keys
@@ -70,6 +71,7 @@ object LiveTracker {
         LiveBoard.unobserve(onBoard)
         roomListeners.values.forEach { (r, l) -> r.removeEventListener(l) }
         roomListeners.clear(); roomNeeds.clear()
+        nudgeListeners.values.forEach { (r, l) -> r.removeEventListener(l) }; nudgeListeners.clear()
         distWatched.forEach { LiveBoard.unwatchPresence(it) }; distWatched.clear()
         stopSteps(); stopLocation(); stopStatus()
         flushStats(force = true)
@@ -87,6 +89,17 @@ object LiveTracker {
         val rooms = myRooms()
         (roomListeners.keys - rooms).forEach { id ->
             roomListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }; roomNeeds.remove(id)
+            nudgeListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }
+        }
+        uid?.let { me ->
+            for (id in rooms - nudgeListeners.keys) {
+                val ref = db.child("canvas_sessions").child(id).child("nudges").child(me)
+                val l = object : ValueEventListener {
+                    override fun onDataChange(s: DataSnapshot) { onNudge(s) }
+                    override fun onCancelled(e: DatabaseError) {}
+                }
+                ref.addValueEventListener(l); nudgeListeners[id] = ref to l
+            }
         }
         for (id in rooms - roomListeners.keys) {
             val ref = db.child("canvas_sessions").child(id).child("stickers")
@@ -130,6 +143,62 @@ object LiveTracker {
         if (!ghost && needLocation && hasLocation()) reconfigureLocation() else stopLocation()
         if (!ghost && needStatus) startStatus() else stopStatus()
         if (ghost != lastGhost) { lastGhost = ghost; flushStats(force = true) }
+    }
+
+    // ═════════ Nudges ═════════
+    //
+    // Tapping someone's Me sticker writes canvas_sessions/{room}/nudges/{their uid}.
+    // Their phone (app or live wallpaper running) shows a notification and makes my
+    // avatar wave on their screen. No server needed; delivery waits if their phone dozes.
+
+    private const val NUDGE_CHANNEL = "nudges"
+    private val lastNudgeSent = HashMap<String, Long>()
+
+    /** Nudge [toUid] in [roomId]. Returns false if it was too soon after the last one. */
+    fun nudge(roomId: String, toUid: String): Boolean {
+        val me = uid ?: return false
+        val now = System.currentTimeMillis()
+        if (now - (lastNudgeSent[toUid] ?: 0L) < 20_000L) return false
+        lastNudgeSent[toUid] = now
+        db.child("canvas_sessions").child(roomId).child("nudges").child(toUid)
+            .setValue(mapOf("from" to me, "name" to name, "at" to ServerValue.TIMESTAMP))
+        return true
+    }
+
+    private fun onNudge(s: DataSnapshot) {
+        val from = s.child("from").getValue(String::class.java) ?: return
+        val at = s.child("at").getValue(Long::class.java) ?: return
+        val who = s.child("name").getValue(String::class.java)?.ifBlank { null } ?: "Someone"
+        if (from == uid) return
+        val seen = prefs.getLong("nudge_seen", 0L)
+        if (at <= seen) return
+        prefs.edit().putLong("nudge_seen", at).apply()
+        // Old ones (phone was off for a while) still mark as seen, but don't ping.
+        if (System.currentTimeMillis() - at > 15 * 60_000L) return
+        LiveBoard.putNudge(from, System.currentTimeMillis())
+        notifyNudge(who)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun notifyNudge(who: String) {
+        if (Build.VERSION.SDK_INT >= 33 && !has(Manifest.permission.POST_NOTIFICATIONS)) return
+        val nm = androidx.core.app.NotificationManagerCompat.from(app)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(android.app.NotificationChannel(NUDGE_CHANNEL, "Nudges", android.app.NotificationManager.IMPORTANCE_HIGH)
+                .apply { description = "When someone taps your avatar to nudge you" })
+        }
+        val open = app.packageManager.getLaunchIntentForPackage(app.packageName)
+        val pi = open?.let { android.app.PendingIntent.getActivity(app, 8, it, android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT) }
+        val n = androidx.core.app.NotificationCompat.Builder(app, NUDGE_CHANNEL)
+            .setSmallIcon(com.alancruse.wallpaper.R.drawable.ic_launcher_monochrome)
+            .setContentTitle("👋 $who nudged you")
+            .setContentText("Tap their avatar to nudge back")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setCategory(androidx.core.app.NotificationCompat.CATEGORY_SOCIAL)
+            .setAutoCancel(true)
+            .apply { if (pi != null) setContentIntent(pi) }
+            .build()
+        try { nm.notify(who.hashCode(), n) } catch (_: SecurityException) {}
     }
 
     // ═════════ Ghost mode ═════════

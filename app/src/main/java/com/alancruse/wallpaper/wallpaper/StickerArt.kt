@@ -79,7 +79,7 @@ object StickerArt {
                 "w:speed_km" -> { speedKmCard(c, s, src?.stats(st.owner)); plate(c, st.label, -55f) }
                 "w:board" -> { billboard(c, s, src?.stats(st.owner)); plate(c, st.label, -74f) }
                 "w:dist" -> distance(c, s, src, roomId)
-                "w:me" -> me(c, s, st, src?.stats(st.owner))
+                "w:me" -> me(c, s, st, src)
                 "w:clock" -> digitalClock(c)
                 "w:analog" -> analogClock(c)
                 "w:countdown" -> countdown(c, s, st)
@@ -859,14 +859,17 @@ object StickerArt {
         Status.SLEEP -> "sleeping"
         Status.AWAY -> "chilling"
         Status.GHOST -> "on a break"
+        NUDGE -> "nudged you!"
         else -> "no status yet"
     }
 
-    private fun me(c: Canvas, s: Float, st: StickerElement, stats: LiveStats?) {
+    private fun me(c: Canvas, s: Float, st: StickerElement, src: LiveSource?) {
+        val stats = src?.stats(st.owner)
         val lk = AvatarLook.decode(st.look)
         val dark = lk.dark == 1
         val now = System.currentTimeMillis()
-        val status = Status.effective(stats, now)
+        val nudged = src != null && st.owner.isNotEmpty() && now - src.nudgedAt(st.owner) < 60_000L
+        val status = if (nudged) NUDGE else Status.effective(stats, now)
         val w = 190f; val h = 150f
         shape.reset(); shape.addRoundRect(-w / 2, -h / 2, w / 2, h / 2, 34f, 34f, Path.Direction.CW)
         toon(c, shape, if (dark) 0xFF2E2A63.toInt() else 0xFFBFE6FF.toInt(), depth = 8f, stroke = 5f, gloss = false)
@@ -881,11 +884,12 @@ object StickerArt {
             Status.SLEEP -> sceneSleep(c, s, lk)
             Status.AWAY -> sceneAway(c, s, lk, dark)
             Status.GHOST -> sceneGhost(c, s, lk, dark)
+            NUDGE -> sceneNudge(c, s, lk, dark)
             else -> sceneHello(c, s, lk, dark)
         }
         // caption on the floor
         val cap = caption(status)
-        val text = if (status.isEmpty() || stats == null || stats.statusAt <= 0L) cap else "$cap · ${ago(now - stats.statusAt)}"
+        val text = if (status.isEmpty() || status == NUDGE || stats == null || stats.statusAt <= 0L) cap else "$cap · ${ago(now - stats.statusAt)}"
         chunky(c, text, 0f, 66f, 14f, maxW = 170f)
         c.restore()
         line.strokeWidth = 5f; line.color = INK; line.pathEffect = null
@@ -1419,6 +1423,30 @@ object StickerArt {
         txt.style = Paint.Style.FILL; txt.color = INK; txt.textSize = 10f; txt.textAlign = Paint.Align.CENTER
         c.drawText("shh", 0f, 3.5f, txt)
         c.restore()
+    }
+
+    private const val NUDGE = "nudge"   // shown on my screen for a minute after they nudge me
+
+    /** They just nudged me: jumping, waving, with a big "hey!" bubble. */
+    private fun sceneNudge(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        val jump = -abs(sin(s * 5f)) * 8f
+        c.save(); c.translate(0f, jump)
+        stander(c, s * 2f, lk, -14f, legA = 6f, armA = 14f, eyes = Eyes.HAPPY, tilt = sin(s * 6f) * 6f, wave = true)
+        c.restore()
+        c.save(); c.translate(46f, -34f); c.rotate(sin(s * 7f) * 6f)
+        shape.reset(); shape.addRoundRect(-22f, -13f, 22f, 13f, 12f, 12f, Path.Direction.CW)
+        shape.moveTo(-10f, 11f); shape.lineTo(-18f, 22f); shape.lineTo(-2f, 12f); shape.close()
+        toon(c, shape, 0xFFFFE066.toInt(), depth = 2.5f, stroke = 3f, gloss = false, shadow = false)
+        chunky(c, "hey!", 0f, 5f, 15f)
+        c.restore()
+        for (i in 0..2) {
+            val ph = (s * 1.2f + i / 3f) % 1f
+            line.color = 0xFFFF6B9A.toInt(); line.strokeWidth = 2.5f; line.alpha = ((1f - ph) * 255).toInt()
+            val r = 9f + ph * 9f; val hx = 20f; val hy = -24f + jump
+            c.drawArc(hx - r, hy - r, hx + r, hy + r, 250f, 60f, false, line); c.drawArc(hx - r, hy - r, hx + r, hy + r, 150f, 50f, false, line)
+            line.alpha = 255; line.color = INK
+        }
     }
 
     private fun sceneHello(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
