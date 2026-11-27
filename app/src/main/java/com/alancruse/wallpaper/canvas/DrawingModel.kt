@@ -32,6 +32,8 @@ data class StickerElement(
     val kind: String = "",
     /** For stat widgets: whose numbers it shows. */
     val owner: String = "",
+    /** Name plate on live stickers ("Araf", "Sneha"…), editable with the text tool. */
+    val label: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 
