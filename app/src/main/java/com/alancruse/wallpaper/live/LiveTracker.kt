@@ -51,6 +51,8 @@ object LiveTracker {
     private val nudgeListeners = HashMap<String, Pair<DatabaseReference, ValueEventListener>>()
     private data class Needs(val dist: Boolean, val steps: Boolean, val location: Boolean, val status: Boolean)
     private val roomNeeds = HashMap<String, Needs>()
+    /** Other people's Me stickers per room (uid → name plate), for the battery buddy. */
+    private val roomAvatars = HashMap<String, Map<String, String>>()
     private val distRooms get() = roomNeeds.filterValues { it.dist }.keys
     private val needSteps get() = roomNeeds.values.any { it.steps }
     private val needLocation get() = roomNeeds.values.any { it.dist || it.location }
@@ -70,7 +72,7 @@ object LiveTracker {
         if (refs == 0 || --refs > 0) return
         LiveBoard.unobserve(onBoard)
         roomListeners.values.forEach { (r, l) -> r.removeEventListener(l) }
-        roomListeners.clear(); roomNeeds.clear()
+        roomListeners.clear(); roomNeeds.clear(); roomAvatars.clear()
         nudgeListeners.values.forEach { (r, l) -> r.removeEventListener(l) }; nudgeListeners.clear()
         distWatched.forEach { LiveBoard.unwatchPresence(it) }; distWatched.clear()
         stopSteps(); stopLocation(); stopStatus()
@@ -88,7 +90,7 @@ object LiveTracker {
     private fun watchRooms() {
         val rooms = myRooms()
         (roomListeners.keys - rooms).forEach { id ->
-            roomListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }; roomNeeds.remove(id)
+            roomListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }; roomNeeds.remove(id); roomAvatars.remove(id)
             nudgeListeners.remove(id)?.let { (r, l) -> r.removeEventListener(l) }
         }
         uid?.let { me ->
@@ -113,7 +115,10 @@ object LiveTracker {
                         st.any { it.owner == me && StickerKinds.needsLocation(it.kind) },
                         st.any { it.owner == me && StickerKinds.needsStatus(it.kind) },
                     )
+                    roomAvatars[id] = st.filter { StickerKinds.needsStatus(it.kind) && it.owner.isNotEmpty() && it.owner != me }
+                        .associate { it.owner to it.label }
                     apply()
+                    checkBatteries()
                 }
                 override fun onCancelled(e: DatabaseError) {}
             }
@@ -179,26 +184,64 @@ object LiveTracker {
         notifyNudge(who)
     }
 
+    private fun notifyNudge(who: String) = notify(
+        NUDGE_CHANNEL, "Nudges", "When someone taps your avatar to nudge you",
+        "nudge:$who".hashCode(), "👋 $who nudged you", "Tap their avatar to nudge back",
+    )
+
     @SuppressLint("MissingPermission")
-    private fun notifyNudge(who: String) {
+    private fun notify(channel: String, channelName: String, desc: String, id: Int, title: String, text: String) {
         if (Build.VERSION.SDK_INT >= 33 && !has(Manifest.permission.POST_NOTIFICATIONS)) return
         val nm = androidx.core.app.NotificationManagerCompat.from(app)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(android.app.NotificationChannel(NUDGE_CHANNEL, "Nudges", android.app.NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "When someone taps your avatar to nudge you" })
+            nm.createNotificationChannel(android.app.NotificationChannel(channel, channelName, android.app.NotificationManager.IMPORTANCE_HIGH)
+                .apply { description = desc })
         }
         val open = app.packageManager.getLaunchIntentForPackage(app.packageName)
         val pi = open?.let { android.app.PendingIntent.getActivity(app, 8, it, android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT) }
-        val n = androidx.core.app.NotificationCompat.Builder(app, NUDGE_CHANNEL)
+        val n = androidx.core.app.NotificationCompat.Builder(app, channel)
             .setSmallIcon(com.alancruse.wallpaper.R.drawable.ic_launcher_monochrome)
-            .setContentTitle("👋 $who nudged you")
-            .setContentText("Tap their avatar to nudge back")
+            .setContentTitle(title)
+            .setContentText(text)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
             .setCategory(androidx.core.app.NotificationCompat.CATEGORY_SOCIAL)
             .setAutoCancel(true)
             .apply { if (pi != null) setContentIntent(pi) }
             .build()
-        try { nm.notify(who.hashCode(), n) } catch (_: SecurityException) {}
+        try { nm.notify(id, n) } catch (_: SecurityException) {}
+    }
+
+    // ═════════ Battery buddy ═════════
+    //
+    // When someone whose Me sticker is on one of my canvases drops to 15% or less and isn't
+    // charging, ping me once. It re-arms after they charge or get back above 25%.
+    // Uses the battery they already share with their avatar (nothing while they're a ghost).
+
+    private const val BATTERY_CHANNEL = "battery"
+
+    private fun checkBatteries() {
+        val me = uid ?: return
+        val now = System.currentTimeMillis()
+        val people = HashMap<String, String>()
+        roomAvatars.values.forEach { m -> m.forEach { (u, label) -> if (u != me) people.putIfAbsent(u, label) } }
+        for ((u, label) in people) {
+            val st = LiveBoard.stats(u) ?: continue
+            if (st.battery < 0 || now - st.updatedAt > 30 * 60_000L) continue
+            val key = "bat_warned_$u"
+            val warned = prefs.getBoolean(key, false)
+            when {
+                st.charging || st.battery >= 25 -> if (warned) prefs.edit().putBoolean(key, false).apply()
+                st.battery <= 15 && !warned -> {
+                    prefs.edit().putBoolean(key, true).apply()
+                    val who = label.ifBlank { st.name }.ifBlank { "Your partner" }
+                    notify(
+                        BATTERY_CHANNEL, "Battery buddy", "When someone on your canvas is running low on battery",
+                        "battery:$u".hashCode(), "🔋 $who's phone is at ${st.battery}%",
+                        "Maybe remind them to plug it in",
+                    )
+                }
+            }
+        }
     }
 
     // ═════════ Ghost mode ═════════
@@ -331,7 +374,11 @@ object LiveTracker {
         distRooms.forEach { db.child("canvas_sessions").child(it).child("presence").child(me).setValue(p) }
     }
 
-    private val onBoard: () -> Unit = { if (needLocation) handler.removeCallbacks(reconfig).also { handler.postDelayed(reconfig, 1500) } }
+    private val onBoard: () -> Unit = {
+        if (needLocation) handler.removeCallbacks(reconfig).also { handler.postDelayed(reconfig, 1500) }
+        handler.removeCallbacks(batteryCheck); handler.postDelayed(batteryCheck, 500)
+    }
+    private val batteryCheck = Runnable { if (refs > 0) checkBatteries() }
     private val reconfig = Runnable { if (needLocation && hasLocation()) reconfigureLocation() }
 
     /** Nearest other person (km) across my distance canvases, from the rounded positions. */
