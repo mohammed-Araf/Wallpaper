@@ -47,6 +47,19 @@ data class StickerElement(
     val streakDay: String = "",
     /** Shared pet: when it was adopted (its age decides baby → young → adult → old). */
     val bornAt: Long = 0L,
+    /**
+     * Shared pet's vitals as of [vitalsAt] (0..1 each; [bloat] is how much it was overfed).
+     * Everything after that moment is worked out from the time and the food on the canvas.
+     */
+    val full: Float = 1f,
+    val joy: Float = 1f,
+    val hp: Float = 1f,
+    val bloat: Float = 0f,
+    val vitalsAt: Long = 0L,
+    /** Shared pet: where it was being petted, and when it was last cheered up from miserable. */
+    val petX: Float = 0f,
+    val petY: Float = 0f,
+    val cheerAt: Long = 0L,
     val timestamp: Long = System.currentTimeMillis()
 )
 

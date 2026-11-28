@@ -859,7 +859,7 @@ object StickerArt {
         val k = pose.stage.scale
         // Ground shadow
         fill.color = 0x33000000
-        val shW = if (pose.action == Pet.Action.DEAD || pose.action == Pet.Action.WEAK || pose.action == Pet.Action.SLEEP) 34f else 24f
+        val shW = if (pose.action == Pet.Action.DEAD || pose.action == Pet.Action.WEAK || pose.action == Pet.Action.SLEEP || pose.action == Pet.Action.STUFFED) 34f else 24f
         c.drawOval(-shW * k, 44f - 4f * k, shW * k, 44f + 4f * k, fill)
         c.save()
         c.scale(if (pose.facing > 0) -k else k, k, 0f, 44f)
@@ -881,25 +881,26 @@ object StickerArt {
         val baby = pose.stage == Pet.Stage.BABY
         val dark = shade(col, 0.8f)
         if (a == Pet.Action.DEAD) { petDead(c, s, lk, col, dark); return }
-        val lying = a == Pet.Action.SLEEP || a == Pet.Action.WEAK
-        val sad = a == Pet.Action.SULK || a == Pet.Action.WEAK || pose.hunger >= Pet.SAD_AFTER
-        val walking = pose.moving && (a == Pet.Action.WALK || a == Pet.Action.RUN || a == Pet.Action.PLAY)
+        val lying = a == Pet.Action.SLEEP || a == Pet.Action.WEAK || a == Pet.Action.STUFFED
+        val petted = a == Pet.Action.PETTED
+        val sad = !petted && a != Pet.Action.EAT && (a == Pet.Action.SULK || a == Pet.Action.WEAK || a == Pet.Action.STUFFED || pose.sad)
+        val walking = pose.moving && (a == Pet.Action.WALK || a == Pet.Action.RUN)
         val run = a == Pet.Action.RUN
         val stepRate = when { run -> 22f; old -> 4f; baby -> 6f; else -> 11f }
         val step = sin(s * stepRate)
         val hop = when {
-            a == Pet.Action.PLAY -> -abs(sin(s * 6f)) * 10f
             run -> -abs(step) * 6f
             walking -> -abs(step) * 2f
             a == Pet.Action.SULK -> 0f
             else -> 0f
         }
         val breathe = 1f + sin(s * if (lying) 1.3f else 2.2f) * if (a == Pet.Action.WEAK) 0.015f else 0.03f
-        val sway = if (a == Pet.Action.SULK) sin(s * 0.9f) * 3f else 0f
+        val sway = when { a == Pet.Action.SULK -> sin(s * 0.9f) * 3f; petted -> sin(s * 5f) * 4f; else -> 0f }
         c.save(); c.translate(0f, hop); c.rotate(sway, 0f, 44f)
+        if (petted) c.scale(1f + sin(s * 10f) * 0.02f, 1f - abs(sin(s * 5f)) * 0.05f, 0f, 44f) // squishes under the hand
         // Head placement: front is -x
         val hx = when { a == Pet.Action.EAT -> -14f; a == Pet.Action.SNIFF -> -16f; lying -> -14f; run -> -6f; else -> 0f }
-        val hy = when { a == Pet.Action.EAT -> 16f + abs(sin(s * 8f)) * 2f; a == Pet.Action.SNIFF -> 22f + sin(s * 7f) * 1.5f; lying -> 26f; sad -> 6f; baby -> 6f; else -> 2f }
+        val hy = when { a == Pet.Action.EAT -> 16f + abs(sin(s * 8f)) * 2f; a == Pet.Action.SNIFF -> 22f + sin(s * 7f) * 1.5f; lying -> 26f; petted -> 5f; sad -> 6f; baby -> 6f; else -> 2f }
         val hr = when { lying -> 19f; baby -> 24f; else -> 22f }
 
         // Tail
@@ -913,7 +914,7 @@ object StickerArt {
             }
             1 -> {
                 val happy = !sad && a != Pet.Action.SLEEP
-                val wag = sin(s * if (happy) (if (run || a == Pet.Action.EAT || a == Pet.Action.PLAY) 18f else 9f) else 2f) * (if (happy) 7f else 2f)
+                val wag = sin(s * if (happy) (if (run || a == Pet.Action.EAT || petted) 18f else 9f) else 2f) * (if (happy) 7f else 2f)
                 if (sad || lying) limb(c, 16f, 38f, 30f, 42f, 6f, col) else limb(c, 16f, 34f, 30f, 22f + wag, 6f, col)
             }
             else -> dot(c, 20f, 38f, 7f, Color.WHITE)
@@ -981,12 +982,17 @@ object StickerArt {
         val blink = (s % 4.2f) < 0.12f
         line.color = INK; line.strokeWidth = 2.6f; line.style = Paint.Style.STROKE
         when {
-            a == Pet.Action.SLEEP || a == Pet.Action.EAT -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 3f, hx + sgn * 8f + 4f, ey + 3f, 10f, 160f, false, line)
+            a == Pet.Action.SLEEP || a == Pet.Action.EAT || petted -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 3f, hx + sgn * 8f + 4f, ey + 3f, 10f, 160f, false, line)
+            a == Pet.Action.STUFFED -> for (sgn in intArrayOf(-1, 1)) { // dizzy swirls
+                c.save(); c.rotate(s * 200f * sgn, hx + sgn * 8f, ey)
+                c.drawArc(hx + sgn * 8f - 4f, ey - 4f, hx + sgn * 8f + 4f, ey + 4f, 0f, 270f, false, line)
+                c.restore()
+            }
             a == Pet.Action.WEAK -> for (sgn in intArrayOf(-1, 1)) {
                 fill.color = INK; c.drawRect(hx + sgn * 8f - 3.5f, ey, hx + sgn * 8f + 3.5f, ey + 3f, fill)
                 c.drawLine(hx + sgn * 8f - 4f, ey, hx + sgn * 8f + 4f, ey, line)
             }
-            (a == Pet.Action.IDLE || a == Pet.Action.PLAY || run) && !sad -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 2f, hx + sgn * 8f + 4f, ey + 5f, 200f, 140f, false, line)
+            (a == Pet.Action.IDLE || run) && !sad -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 2f, hx + sgn * 8f + 4f, ey + 5f, 200f, 140f, false, line)
             blink -> for (sgn in intArrayOf(-1, 1)) c.drawLine(hx + sgn * 8f - 3.5f, ey, hx + sgn * 8f + 3.5f, ey, line)
             else -> for (sgn in intArrayOf(-1, 1)) {
                 val big = if (baby) 1.25f else 1f
@@ -1011,7 +1017,12 @@ object StickerArt {
                 line.alpha = ((1f - ph) * 200).toInt(); c.drawArc(hx - 12f - ph * 6f, hy + 4f, hx - 4f - ph * 6f, hy + 14f, 120f, 120f, false, line); line.alpha = 255
             }
             sad -> c.drawArc(hx - 4f, hy + 12f, hx + 4f, hy + 17f, 200f, 140f, false, line)
-            lk.species == 1 && (run || a == Pet.Action.PLAY || a == Pet.Action.IDLE) -> {
+            a == Pet.Action.STUFFED -> { // cheeks puffed, wobbly mouth
+                fill.color = 0x5594D82D; c.drawCircle(hx, hy + 6f, hr * 0.7f, fill)
+                aux.reset(); aux.moveTo(hx - 5f, hy + 14f); aux.quadTo(hx - 2.5f, hy + 11f, hx, hy + 14f); aux.quadTo(hx + 2.5f, hy + 17f, hx + 5f, hy + 14f)
+                c.drawPath(aux, line)
+            }
+            lk.species == 1 && (run || petted || a == Pet.Action.IDLE) -> {
                 c.drawArc(hx - 6f, hy + 6f, hx + 6f, hy + 15f, 20f, 140f, false, line)
                 fill.color = 0xFFFF7AA2.toInt(); c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, fill)
                 line.strokeWidth = 1.5f; c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, line)
@@ -1070,19 +1081,33 @@ object StickerArt {
             c.restore()
         }
         when (pose.action) {
-            Pet.Action.EAT, Pet.Action.PLAY -> for (i in 0..2) {
+            Pet.Action.EAT -> for (i in 0..2) {
                 val ph = (s * 0.5f + i / 3f) % 1f
                 c.save(); c.translate(-14f + i * 14f + sin(s * 2f + i) * 4f, top + 10f - ph * 30f)
                 heartPath(shape, 5f)
                 fill.color = 0xFFFF5C8A.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawPath(shape, fill); fill.alpha = 255
                 c.restore()
             }
-            Pet.Action.IDLE -> if (pose.hunger in Pet.PECKISH_AFTER until Pet.HUNGRY_AFTER && (s % 12f) < 4f) bubble("snack?")
+            Pet.Action.PETTED -> {
+                for (i in 0..4) { // a fountain of hearts
+                    val ph = (s * 0.7f + i / 5f) % 1f
+                    val side = if (i % 2 == 0) -1f else 1f
+                    c.save(); c.translate(side * (16f + ph * 18f) * k + sin(s * 3f + i) * 3f, top + 14f * k - ph * 34f)
+                    heartPath(shape, 4f + (i % 3) * 1.5f)
+                    fill.color = if (i % 3 == 1) 0xFFFF9EC0.toInt() else 0xFFFF5C8A.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawPath(shape, fill); fill.alpha = 255
+                    c.restore()
+                }
+                // the hand rubbing its head
+                c.save(); c.translate(sin(s * 5f) * 7f * k, 44f - 66f * k + abs(sin(s * 5f)) * 2f); c.scale(k * 0.9f, k * 0.9f)
+                hand(c)
+                c.restore()
+            }
+            Pet.Action.IDLE -> if (pose.full < 0.6f && (s % 12f) < 4f) bubble("snack?")
             Pet.Action.SLEEP -> for (i in 0..2) {
                 val ph = (s * 0.4f + i / 3f) % 1f
                 chunky(c, "z", 6f + ph * 22f, 20f - ph * 34f, 9f + ph * 6f, alpha = ((1f - ph) * 255).toInt())
             }
-            Pet.Action.SNIFF, Pet.Action.WALK -> if (pose.hunger >= Pet.HUNGRY_AFTER && (s % 6f) < 3f) bubble(if (pose.action == Pet.Action.SNIFF) "sniff sniff" else "food?")
+            Pet.Action.SNIFF, Pet.Action.WALK -> if (pose.hungry && (s % 6f) < 3f) bubble(if (pose.action == Pet.Action.SNIFF) "sniff sniff" else "food?")
             Pet.Action.RUN -> for (i in 0..2) { // dust puffs behind
                 val ph = (s * 3f + i / 3f) % 1f
                 fill.color = 0x55FFFFFF; fill.alpha = ((1f - ph) * 140).toInt()
@@ -1094,11 +1119,12 @@ object StickerArt {
                     fill.color = 0xCCFFFFFF.toInt(); fill.alpha = ((1f - ph) * 200).toInt()
                     c.drawCircle(-pose.facing * -(-18f - ph * 14f) * k, top + 20f - ph * 14f, (2.5f + ph * 3f) * k, fill); fill.alpha = 255
                 }
-                if ((s % 8f) < 4f) bubble("...")
-                if (pose.hunger >= Pet.SAD_AFTER) { val ph = (s * 0.8f) % 1f; fill.color = 0xFF7CC6FF.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawCircle(-6f * k, top + 40f * k + ph * 12f, 2.2f, fill); fill.alpha = 255 }
+                if ((s % 8f) < 4f) bubble(when { pose.refusing -> "not hungry..."; pose.sad -> "pet me?"; else -> "..." })
+                if (pose.joy < 0.15f || pose.full < 0.1f) { val ph = (s * 0.8f) % 1f; fill.color = 0xFF7CC6FF.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawCircle(-6f * k, top + 40f * k + ph * 12f, 2.2f, fill); fill.alpha = 255 }
             }
+            Pet.Action.STUFFED -> if ((s % 7f) < 4f) bubble("too full...", 220)
             Pet.Action.WEAK -> {
-                bubble("so hungry...", 200)
+                bubble(if (pose.hungry) "so hungry..." else if (pose.sad) "so lonely..." else "feeling sick...", 200)
                 fill.color = 0xFF7CC6FF.toInt(); c.drawCircle(-30f * k, 22f, 2.4f, fill)
             }
             Pet.Action.DEAD -> { // little spirit drifting up, with a halo
@@ -1116,7 +1142,10 @@ object StickerArt {
     /** A bowl of food; empties as the pet eats it. */
     private fun foodBowl(c: Canvas, s: Float, st: StickerElement, src: LiveSource?, roomId: String?) {
         val preview = src == null || roomId == "preview"
-        val left = if (preview) 1f else Pet.foodLeft(st, world, clockNow())
+        val left0 = if (preview) 1f else Pet.foodLeft(st, world, clockNow())
+        if (left0 <= -1f) return // licked clean and put away
+        val left = left0.coerceAtLeast(0f)
+        if (left0 < 0f) { val k = 1f + left0; c.scale(k, k, 0f, 10f) } // shrinks away
         fill.color = 0x33000000; c.drawOval(-24f, 10f, 24f, 18f, fill)
         val n = (left * 9).roundToInt()
         for (i in 0 until n) {
@@ -1160,7 +1189,132 @@ object StickerArt {
     /** The pet alone in a ~90-unit box, for the species picker. */
     fun petPreview(c: Canvas, look: String, timeMs: Long, stage: Pet.Stage = Pet.Stage.ADULT) {
         val s = (timeMs % 3_600_000L) / 1000f
-        petBody(c, s, Pet.look(look), Pet.Pose(0f, 0f, -1f, Pet.Action.IDLE, stage, 0L, false))
+        petBody(c, s, Pet.look(look), Pet.Pose(0f, 0f, -1f, Pet.Action.IDLE, stage))
+    }
+
+    /** A cartoon hand seen from above, fingers pointing down; palm centred on (0, 0), ~40 units. */
+    fun hand(c: Canvas) {
+        val skin = 0xFFFFCFA8.toInt()
+        // sleeve
+        aux.reset(); aux.addRoundRect(-11f, -34f, 11f, -12f, 5f, 5f, Path.Direction.CW)
+        toon(c, aux, 0xFF5C9DFF.toInt(), depth = 2f, stroke = 3f, gloss = true, shadow = false)
+        // fingers
+        for ((i, x) in floatArrayOf(-9f, -3f, 3f, 9f).withIndex()) {
+            val len = if (i == 0 || i == 3) 9f else 12f
+            aux.reset(); aux.addRoundRect(x - 3.4f, -2f, x + 3.4f, 4f + len, 3.4f, 3.4f, Path.Direction.CW)
+            toon(c, aux, skin, depth = 1.5f, stroke = 2.6f, gloss = false, shadow = false)
+        }
+        // thumb
+        aux.reset(); aux.addRoundRect(-19f, -8f, -11f, -1f, 4f, 4f, Path.Direction.CW)
+        toon(c, aux, skin, depth = 1.5f, stroke = 2.6f, gloss = false, shadow = false)
+        // palm
+        aux.reset(); aux.addRoundRect(-13f, -16f, 13f, 4f, 9f, 9f, Path.Direction.CW)
+        toon(c, aux, skin, depth = 2f, stroke = 3f, gloss = true, shadow = false)
+        fill.color = 0x40FF7AA2; c.drawOval(-9f, -6f, -3f, -2f, fill)
+    }
+
+    /** The food bowl alone (for the drag-out tool). Centred on (0, 0), ~50 units wide. */
+    fun bowlIcon(c: Canvas, timeMs: Long) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        c.save(); c.translate(0f, 2f)
+        foodBowl(c, s, StickerElement(kind = "w:food"), null, null)
+        c.restore()
+    }
+
+    /**
+     * The pet's thought cloud: name and age, then its food, health and happiness bars.
+     * Drawn above its head in canvas space; [unit] is the size of one cloud unit, [appear] 0..1.
+     */
+    fun petThought(c: Canvas, st: StickerElement, timeMs: Long, unit: Float, appear: Float) {
+        if (appear <= 0.01f) return
+        val now = clockNow()
+        val s = (timeMs % 3_600_000L) / 1000f
+        val life = Pet.life(st, world, now)
+        val v = life.now
+        val pose = Pet.pose(st, now, world)
+        val u = st.size * st.scale / 100f
+        val k = pose.stage.scale
+        val headTop = pose.y - st.size * st.scale * 0.35f + (44f - 70f * k - 20f) * u // above its speech bubble
+        val w = 160f; val h = if (v.dead) 70f else 104f
+        c.save()
+        c.translate(pose.x, headTop)
+        c.scale(unit, unit)
+        val pop = appear * (1f + 0.12f * sin(appear * Math.PI.toFloat()))
+        c.scale(pop, pop, 0f, 0f)
+        val bob = sin(s * 1.6f) * 1.5f
+        // trail of little puffs from its head
+        for ((i, r) in floatArrayOf(4f, 6f, 8.5f).withIndex()) {
+            aux.reset(); aux.addCircle(8f + i * 7f, -6f - i * 12f + bob * 0.5f, r, Path.Direction.CW)
+            toon(c, aux, Color.WHITE, depth = 1.5f, stroke = 2.5f, gloss = false, shadow = false)
+        }
+        // the cloud
+        val cx = 20f; val bottom = -40f + bob
+        val top = bottom - h
+        shape.reset(); shape.addRoundRect(cx - w / 2, top, cx + w / 2, bottom, 30f, 30f, Path.Direction.CW)
+        val bump = Path()
+        val n = 6
+        for (i in 0..n) {
+            val x = cx - w / 2 + 14f + i * (w - 28f) / n
+            bump.addCircle(x, top + 4f, 15f, Path.Direction.CW); bump.addCircle(x, bottom - 4f, 13f, Path.Direction.CW)
+        }
+        bump.addCircle(cx - w / 2 + 4f, (top + bottom) / 2, 18f, Path.Direction.CW)
+        bump.addCircle(cx + w / 2 - 4f, (top + bottom) / 2, 18f, Path.Direction.CW)
+        shape.op(bump, Path.Op.UNION)
+        toon(c, shape, Color.WHITE, depth = 3f, stroke = 3.5f, gloss = true, shadow = false)
+
+        val name = st.label.ifBlank { "Your pet" }
+        val age = Pet.ageDays(st, now)
+        val face0 = txt.typeface
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textAlign = Paint.Align.CENTER; txt.textSize = 15f
+        c.drawText(name.take(12), cx, top + 18f, txt)
+        txt.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); txt.textSize = 10.5f; txt.color = 0xFF6B6B7A.toInt()
+        if (v.dead) {
+            val lived = Pet.ageDays(st, v.deadAt)
+            c.drawText("lived $lived ${if (lived == 1) "day" else "days"} · gone to pet heaven", cx, top + 36f, txt)
+            txt.color = INK; txt.textSize = 11f
+            c.drawText("drag me to the bin to bury me", cx, top + 54f, txt)
+        } else {
+            val stage = when (pose.stage) { Pet.Stage.BABY -> "baby"; Pet.Stage.YOUNG -> "young"; Pet.Stage.ADULT -> "grown up"; Pet.Stage.OLD -> "old timer" }
+            c.drawText("$stage · day ${age + 1}", cx, top + 32f, txt)
+            val rows = listOf(
+                Triple("Food", v.full, 0xFFFFA94D.toInt()),
+                Triple("Health", v.hp, if (v.hp < Pet.WEAK) 0xFFFF6B6B.toInt() else 0xFF51CF66.toInt()),
+                Triple("Happy", v.joy, 0xFFFFD43B.toInt()),
+            )
+            for ((i, r) in rows.withIndex()) {
+                val (label, value, col) = r
+                val y = top + 50f + i * 19f
+                val x0 = cx - w / 2 + 12f
+                // icon
+                when (i) {
+                    0 -> { dot(c, x0 + 6f, y, 5f, 0xFFB5651D.toInt()); dot(c, x0 + 3f, y - 3f, 2.2f, 0xFFC97A3A.toInt()) }
+                    1 -> { c.save(); c.translate(x0 + 6f, y); heartPath(shape, 5.5f); fill.color = 0xFFFF5C8A.toInt(); c.drawPath(shape, fill); c.restore() }
+                    else -> {
+                        dot(c, x0 + 6f, y, 6f, 0xFFFFD43B.toInt())
+                        line.color = INK; line.strokeWidth = 1.4f; line.style = Paint.Style.STROKE
+                        if (value < Pet.SAD) c.drawArc(x0 + 3f, y + 1.5f, x0 + 9f, y + 5f, 200f, 140f, false, line)
+                        else c.drawArc(x0 + 3f, y - 1f, x0 + 9f, y + 3.5f, 20f, 140f, false, line)
+                        fill.color = INK; c.drawCircle(x0 + 4f, y - 2f, 0.9f, fill); c.drawCircle(x0 + 8f, y - 2f, 0.9f, fill)
+                    }
+                }
+                txt.textAlign = Paint.Align.LEFT; txt.textSize = 10f; txt.color = INK
+                c.drawText(label, x0 + 15f, y + 3.5f, txt)
+                val bx = x0 + 52f; val bw = w - 52f - 30f
+                fill.color = 0x1A1A1A2E; c.drawRoundRect(bx, y - 4.5f, bx + bw, y + 4.5f, 4.5f, 4.5f, fill)
+                val fillW = bw * value.coerceIn(0f, 1f)
+                if (fillW > 1f) {
+                    val low = value < 0.25f && (s % 1f) < 0.5f
+                    fill.color = if (low) shade(col, 1.2f) else col
+                    c.drawRoundRect(bx, y - 4.5f, bx + maxOf(fillW, 9f), y + 4.5f, 4.5f, 4.5f, fill)
+                    fill.color = 0x55FFFFFF; c.drawRoundRect(bx + 2f, y - 3.5f, bx + maxOf(fillW, 9f) - 2f, y - 1f, 2f, 2f, fill)
+                }
+                line.color = INK; line.strokeWidth = 1.6f; line.style = Paint.Style.STROKE
+                c.drawRoundRect(bx, y - 4.5f, bx + bw, y + 4.5f, 4.5f, 4.5f, line)
+            }
+            txt.textAlign = Paint.Align.CENTER
+        }
+        txt.typeface = face0
+        c.restore()
     }
 
     // ═════════ Status avatar ("w:me") ═════════

@@ -108,24 +108,26 @@ class AvatarRenderTest {
         val out = File(System.getProperty("avatar.out") ?: "build/avatar").apply { mkdirs() }
         val cols = 6; val cell = 180
         val rows = listOf(0, 1, 2)
+        data class S(val a: Pet.Action, val st: Pet.Stage, val full: Float = 0.8f, val joy: Float = 0.8f, val hp: Float = 1f, val refusing: Boolean = false)
         val states = listOf(
-            Triple(Pet.Action.IDLE, Pet.Stage.BABY, 0L), Triple(Pet.Action.RUN, Pet.Stage.YOUNG, 0L),
-            Triple(Pet.Action.WALK, Pet.Stage.ADULT, 0L), Triple(Pet.Action.IDLE, Pet.Stage.OLD, 0L),
-            Triple(Pet.Action.EAT, Pet.Stage.ADULT, 0L), Triple(Pet.Action.SLEEP, Pet.Stage.ADULT, 0L),
-            Triple(Pet.Action.SNIFF, Pet.Stage.ADULT, 16 * Pet.HOUR), Triple(Pet.Action.SULK, Pet.Stage.ADULT, 32 * Pet.HOUR),
-            Triple(Pet.Action.WEAK, Pet.Stage.ADULT, 50 * Pet.HOUR), Triple(Pet.Action.DEAD, Pet.Stage.ADULT, 80 * Pet.HOUR),
-            Triple(Pet.Action.PLAY, Pet.Stage.YOUNG, 0L), Triple(Pet.Action.WALK, Pet.Stage.OLD, 0L),
+            S(Pet.Action.IDLE, Pet.Stage.BABY), S(Pet.Action.RUN, Pet.Stage.YOUNG),
+            S(Pet.Action.WALK, Pet.Stage.ADULT), S(Pet.Action.IDLE, Pet.Stage.OLD),
+            S(Pet.Action.EAT, Pet.Stage.ADULT), S(Pet.Action.PETTED, Pet.Stage.ADULT),
+            S(Pet.Action.SNIFF, Pet.Stage.ADULT, full = 0.2f), S(Pet.Action.SULK, Pet.Stage.ADULT, joy = 0.01f, refusing = true),
+            S(Pet.Action.STUFFED, Pet.Stage.ADULT, full = 1f), S(Pet.Action.WEAK, Pet.Stage.ADULT, full = 0f, hp = 0.2f),
+            S(Pet.Action.SLEEP, Pet.Stage.ADULT), S(Pet.Action.DEAD, Pet.Stage.ADULT, hp = 0f),
         )
         val perRow = 12
-        val bmp = Bitmap.createBitmap(cols * cell, rows.size * (perRow / cols) * cell + 2 * cell, Bitmap.Config.ARGB_8888)
+        val bmp = Bitmap.createBitmap(cols * cell, rows.size * (perRow / cols) * cell + 5 * cell, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp); c.drawColor(Color.parseColor("#BFD7EA"))
-        for (sp in rows) states.forEachIndexed { i, (a, stg, hunger) ->
+        for (sp in rows) states.forEachIndexed { i, s ->
             val x = (i % cols) * cell + cell / 2f
             val y = (sp * 2 + i / cols) * cell + cell * 0.62f
             val st = StickerElement(kind = "w:pet", label = listOf("Mochi", "Bruno", "Coco")[sp], look = Pet.Look(sp, listOf(0, 3, 1)[sp]).encode(), x = x, y = y, size = 120f)
-            StickerArt.drawPetPose(c, st, Pet.Pose(x, y, if (i % 2 == 0) -1f else 1f, a, stg, hunger, a == Pet.Action.WALK || a == Pet.Action.RUN || a == Pet.Action.PLAY), 1700L)
+            val moving = s.a == Pet.Action.WALK || s.a == Pet.Action.RUN
+            StickerArt.drawPetPose(c, st, Pet.Pose(x, y, if (i % 2 == 0) -1f else 1f, s.a, s.st, s.full, s.joy, s.hp, moving, s.refusing), 1700L)
         }
-        // food bowl full / half / empty, and the pit
+        // food bowl full / half / empty, the pit, the hand
         val fy = rows.size * 2 * cell + cell * 0.6f
         val now = 1795943400000L
         StickerArt.clockNow = { now }
@@ -133,7 +135,14 @@ class AvatarRenderTest {
             val food = StickerElement(kind = "w:food", x = cell * (i + 0.5f), y = fy, size = 120f, timestamp = now - left * 100_000L)
             StickerArt.draw(c, food, 1700L, null, null)
         }
-        c.save(); c.translate(cell * 4.5f, fy); c.scale(1.4f, 1.4f); StickerArt.pit(c, 1700L, true); c.restore()
+        c.save(); c.translate(cell * 3.5f, fy); c.scale(1.4f, 1.4f); StickerArt.pit(c, 1700L, true); c.restore()
+        c.save(); c.translate(cell * 5f, fy - 20f); c.scale(2f, 2f); StickerArt.hand(c); c.restore()
+        // thought cloud over a real pet
+        val pet = Pet.adopt(StickerElement(kind = "w:pet", label = "Mochi", look = "s1c3", x = cell * 1.5f, y = fy + cell * 3.2f, size = 150f), "A", now - 10 * Pet.HOUR)
+        StickerArt.world = listOf(pet)
+        StickerArt.draw(c, pet.copy(x = cell * 1.5f), 1700L, StickerArt.Preview, "room")
+        StickerArt.petThought(c, pet.copy(x = cell * 1.5f), 1700L, 1.1f, 1f)
         FileOutputStream(File(out, "pets.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        StickerArt.world = emptyList()
     }
 }

@@ -252,13 +252,20 @@ object LiveTracker {
 
     // ═════════ Pet: meals and reminders ═════════
     //
-    // Meals happen on every phone's screen by themselves (see Pet.meals); whichever phone
-    // notices one has finished writes it down (fedAt, streak) and clears the empty bowl.
-    // The writes are idempotent, so two phones doing it at once is fine. Reminders: hungry
-    // (14 h), weak (48 h) and died (72 h), once each per meal, not at night.
+    // Meals happen on every phone's screen by themselves (see Pet.life); whichever phone
+    // notices one has finished writes it down (the bars, fedAt, streak) and clears the empty
+    // bowl. The writes are idempotent, so two phones doing it at once is fine. Reminders:
+    // hungry or sad, weak, died; once each per level, not at night.
 
     private const val PET_CHANNEL = "pet"
     private val petCheck = Runnable { if (refs > 0) checkPets() }
+
+    /** Fields [Pet.settle] / [Pet.pet] change, for a partial write. */
+    fun petFields(p: StickerElement): Map<String, Any> = mapOf(
+        "fedAt" to p.fedAt, "careBy" to p.careBy, "streak" to p.streak, "streakDay" to p.streakDay,
+        "full" to p.full, "joy" to p.joy, "hp" to p.hp, "bloat" to p.bloat, "vitalsAt" to p.vitalsAt,
+        "playedAt" to p.playedAt, "petX" to p.petX, "petY" to p.petY, "cheerAt" to p.cheerAt,
+    )
 
     private fun checkPets() {
         handler.removeCallbacks(petCheck)
@@ -273,33 +280,32 @@ object LiveTracker {
                 if (!StickerKinds.isPet(p0.kind) || key.isEmpty()) continue
                 var p = p0
                 // Write down finished meals and clear their bowls
-                for (m in Pet.meals(p0, world, now)) {
-                    // Leave the bowl until it has wandered off (4 s), so nothing jumps.
-                    if (m.end + 5_000L > now) { next = minOf(next, m.end + 5_000L); break }
-                    if (m.end <= p.fedAt) continue
-                    p = Pet.fed(p, m.food.label, m.end)
-                    ref.child(key).updateChildren(mapOf("fedAt" to p.fedAt, "careBy" to p.careBy, "streak" to p.streak, "streakDay" to p.streakDay))
-                    keyed.firstOrNull { it.second === m.food }?.first?.takeIf { it.isNotEmpty() }?.let { ref.child(it).removeValue() }
+                Pet.settle(p0, world, now)?.let { (q, eaten) ->
+                    p = q
+                    ref.child(key).updateChildren(petFields(q))
+                    eaten.forEach { f -> keyed.firstOrNull { it.second === f }?.first?.takeIf { it.isNotEmpty() }?.let { ref.child(it).removeValue() } }
                 }
-                // Food waiting until it's hungry enough to bother
-                if (world.any { StickerKinds.isFood(it.kind) }) next = minOf(next, maxOf(now + 30_000L, p.fedAt + Pet.FULL_FOR))
-                if (p.fedAt <= 0L) continue
+                // Meals under way: check back when they're done
+                Pet.life(p0, world, now).meals.lastOrNull { it.after == null }?.let { next = minOf(next, it.end + Pet.CLEAR_AFTER + 500L) }
+                if (world.any { StickerKinds.isFood(it.kind) }) next = minOf(next, now + 30_000L)
+                next = minOf(next, now + 30 * 60_000L)
                 val name = p.label.ifBlank { "Your pet" }
-                val marks = Pet.hungerMarks(p)
-                val level = marks.count { now >= it }   // 0 fine · 1 hungry · 2 weak · 3 dead
-                marks.firstOrNull { now < it }?.let { next = minOf(next, it) }
-                if (level == 0) continue
+                val level = Pet.level(p, world, now)   // 0 fine · 1 hungry/sad · 2 weak · 3 dead
                 val noteKey = "pet_note_${room}_$key"
                 val last = prefs.getString(noteKey, "") ?: ""
-                val tag = "${p.fedAt}:$level"
-                if (last == tag || now - marks[level - 1] > 24 * Pet.HOUR) continue
-                if (!day) { next = minOf(next, now + Pet.HOUR); continue }
+                // Re-arm once it's back to fine
+                if (level == 0) { if (last.isNotEmpty()) prefs.edit().remove(noteKey).apply(); continue }
+                val tag = "$level"
+                if (last == tag || (last.toIntOrNull() ?: 0) > level) continue
+                if (!day) continue
                 prefs.edit().putString(noteKey, tag).apply()
+                val s = Pet.life(p, world, now).now
                 val streak = Pet.streak(p, now)
                 val (title, text) = when (level) {
-                    1 -> "🐾 $name is hungry" to (if (streak > 1) "Drop some food to keep your $streak-day streak going" else "Open the canvas and drop some food")
-                    2 -> "🥺 $name is very weak" to "$name hasn't eaten in 2 days. Feed them now or they won't make it"
-                    else -> "💔 $name has died" to "They went 3 days without food. Open the canvas to say goodbye"
+                    1 -> if (s.hungry) "🐾 $name is hungry" to (if (streak > 1) "Drop some food to keep your $streak-day streak going" else "Open the canvas and drop some food")
+                         else "🥺 $name misses you" to "Give them a pet to cheer them up. Sad pets won't eat"
+                    2 -> "🤒 $name is very weak" to (if (s.hungry) "They need food now or they won't make it" else if (s.sad) "They're too sad to eat. Pet them, then feed them" else "Too much food made them sick. Let them rest")
+                    else -> "💔 $name has died" to "Open the canvas to say goodbye"
                 }
                 notify(PET_CHANNEL, "Pet", "When your shared pet needs you", "pet:$room:$key".hashCode(), title, text)
             }
