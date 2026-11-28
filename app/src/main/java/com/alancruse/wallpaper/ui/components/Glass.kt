@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -398,11 +399,14 @@ fun GlassTopBar(
 fun GlassSheet(
     visible: Boolean,
     onDismiss: () -> Unit,
+    /** Fade the sheet and scrim out while keeping it alive (e.g. while dragging something out of it). */
+    faded: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = LocalWallpaperColors.current
     if (visible) BackHandler(onBack = onDismiss)
-    Box(Modifier.fillMaxSize()) {
+    val fade by animateFloatAsState(if (faded) 0f else 1f, tween(180), label = "sheetFade")
+    Box(Modifier.fillMaxSize().graphicsLayer { alpha = fade }) {
         AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
             Box(Modifier.fillMaxSize().background(c.scrim).clickable(remember { MutableInteractionSource() }, null, onClick = onDismiss))
         }

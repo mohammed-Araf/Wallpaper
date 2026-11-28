@@ -82,6 +82,7 @@ class LiveWallpaperService : WallpaperService() {
             super.onVisibilityChanged(visible)
             this.visible = visible
             if (visible) {
+                StickerArt.use24h = android.text.format.DateFormat.is24HourFormat(this@LiveWallpaperService)
                 handler.removeCallbacks(idleStop)
                 startListening()
                 if (dirty) { dirty = false; drawFrame() }

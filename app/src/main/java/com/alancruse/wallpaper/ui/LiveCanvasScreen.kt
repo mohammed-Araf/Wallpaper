@@ -14,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -72,7 +73,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.google.firebase.auth.FirebaseAuth
+import com.alancruse.wallpaper.live.AvatarLook
 import com.alancruse.wallpaper.live.LiveBoard
+import com.alancruse.wallpaper.live.LiveSource
+import com.alancruse.wallpaper.live.LiveStats
+import com.alancruse.wallpaper.live.Pet
+import com.alancruse.wallpaper.live.Presence
+import com.alancruse.wallpaper.live.Status
+import androidx.compose.foundation.verticalScroll
 import com.alancruse.wallpaper.live.LiveTracker
 import com.alancruse.wallpaper.live.StickerKinds
 import com.alancruse.wallpaper.wallpaper.StickerArt
@@ -169,11 +177,32 @@ fun LiveCanvasScreen(
     var editing by remember { mutableStateOf<TextEdit?>(null) }
     // Name plate being edited on a live sticker: sticker index + draft text
     var plateEdit by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    // Status avatar look being edited: sticker index (null = about to add one) + look
+    var avatarEdit by remember { mutableStateOf<Pair<Int?, AvatarLook>?>(null) }
+    // Countdown being set up: index (null = new) and its draft.
+    var countdownEdit by remember { mutableStateOf<Pair<Int?, StickerElement>?>(null) }
+    // Pet sheet: index (null = adopting a new one) and the draft.
+    var petEdit by remember { mutableStateOf<Pair<Int?, StickerElement>?>(null) }
+    // Where a sticker that needs setting up (pet, countdown, avatar) was dropped; placed on save.
+    var placeAt by remember { mutableStateOf<Offset?>(null) }
+    // Live / animated sticker being dragged out of the market
+    var dragKind by remember { mutableStateOf<String?>(null) }
+    // Tapped pet (sticker key): shows its thought cloud and the food / hand tools
+    var petFocus by remember { mutableStateOf<String?>(null) }
+    var petShown by remember { mutableStateOf<String?>(null) }
+    // "food" or "hand" being dragged out from the pet tools, and where the finger is
+    var toolDrag by remember { mutableStateOf<String?>(null) }
+    var toolPos by remember { mutableStateOf(Offset.Zero) }
+    val petAppear by animateFloatAsState(if (petFocus != null) 1f else 0f, spring(0.55f, 260f), label = "petThought",
+        finishedListener = { if (it == 0f) petShown = null })
+    val avatarPrefs = remember { context.getSharedPreferences("avatar", android.content.Context.MODE_PRIVATE) }
     var uploading by remember { mutableStateOf(false) }
 
     // Element drag → dustbin
     var draggingEl by remember { mutableStateOf(false) }
     var overBin by remember { mutableStateOf(false) }
+    // Dragging a pet that has died: the bin becomes a pit, and dropping it there buries it.
+    var pitMode by remember { mutableStateOf(false) }
 
     // Live stroke
     val livePoints = remember { ArrayList<Point>() }
@@ -190,7 +219,8 @@ fun LiveCanvasScreen(
 
     // Animated / live stickers: frame clock only while some are on the canvas.
     var frameMs by remember { mutableLongStateOf(0L) }
-    val hasLive = sync.sharedStickers.any { it.kind.isNotEmpty() }
+    val hasLive = sync.sharedStickers.any { it.kind.isNotEmpty() } || dragKind != null || placeAt != null
+    LaunchedEffect(Unit) { StickerArt.use24h = android.text.format.DateFormat.is24HourFormat(context) }
     LaunchedEffect(hasLive) { if (hasLive) while (true) withFrameMillis { frameMs = it } }
     val liveWatcher = remember(sync) { LiveBoard.Watcher(sync.roomId) }
     LaunchedEffect(sync) { snapshotFlow { sync.sharedStickers.toList() }.collect { liveWatcher.update(it) } }
@@ -210,7 +240,7 @@ fun LiveCanvasScreen(
     }
     fun requestLivePerms(k: String) {
         val perms = buildList {
-            if (StickerKinds.needsSteps(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
+            if (StickerKinds.needsActivity(k) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) add(Manifest.permission.ACTIVITY_RECOGNITION)
             if (StickerKinds.needsLocation(k)) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (perms.isNotEmpty()) { pendingKind = k; livePermLauncher.launch(perms.toTypedArray()) } else { maybeBackground(k); LiveTracker.refresh() }
@@ -276,9 +306,12 @@ fun LiveCanvasScreen(
             return Offset((dx * cos(r) - dy * sin(r)).toFloat(), (dx * sin(r) + dy * cos(r)).toFloat())
         }
         sync.sharedStickers.forEachIndexed { i, s ->
-            val size = s.size * s.scale
-            val l = local(s.x, s.y, s.rotation)
-            val dx = l.x; val dy = l.y + size * 0.35f
+            val pet = StickerKinds.isPet(s.kind)
+            val size = s.size * s.scale * (if (pet) StickerArt.petScale(s) else 1f)
+            val (ax, ay) = if (pet) StickerArt.petAnchor(s) else s.x to s.y
+            val l = local(ax, ay, s.rotation)
+            // Pets draw from their feet up; their box is centred a bit lower.
+            val dx = l.x; val dy = l.y + size * 0.35f - (if (pet) size * 0.2f else 0f)
             if (s.kind.isNotEmpty()) {
                 val (hw, hh) = StickerArt.halfSize(s.kind); val u = size / 100f
                 if (abs(dx) < hw * u + slack && abs(dy) < hh * u + slack) take(ElType.STICKER, i, s.timestamp)
@@ -318,6 +351,9 @@ fun LiveCanvasScreen(
         }
     }
 
+    fun isDeadPet(el: Pair<ElType, Int>?) = el != null && el.first == ElType.STICKER &&
+        sync.sharedStickers.getOrNull(el.second)?.let { StickerKinds.isPet(it.kind) && Pet.isDead(it, sync.sharedStickers, System.currentTimeMillis()) } == true
+
     fun deleteEl(el: Pair<ElType, Int>) = when (el.first) {
         ElType.STICKER -> sync.deleteSticker(el.second)
         ElType.TEXT -> sync.deleteText(el.second)
@@ -325,6 +361,90 @@ fun LiveCanvasScreen(
     }
 
     fun resetView() { viewScale = 1f; viewOffset = Offset.Zero }
+
+    fun myName() = FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: ""
+    fun myUid() = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+
+    /** Writes a pet update and clears the bowls it has eaten. */
+    fun applyPet(key: String, update: Pair<StickerElement, List<StickerElement>>) {
+        val i = sync.stickerKeys.indexOf(key)
+        if (i >= 0) sync.updateSticker(i, update.first)
+        for (f in update.second) {
+            val fi = sync.sharedStickers.indexOfFirst { it === f || it == f }
+            if (fi >= 0) sync.deleteSticker(fi)
+        }
+    }
+
+    fun focusedPet(key: String? = petFocus): Pair<String, StickerElement>? {
+        val i = key?.let { sync.stickerKeys.indexOf(it) } ?: return null
+        val p = sync.sharedStickers.getOrNull(i)?.takeIf { StickerKinds.isPet(it.kind) } ?: return null
+        return key to p
+    }
+
+    /**
+     * Put a market sticker on the canvas at [at] (canvas point; null = middle of the view).
+     * Stickers that need setting up open their sheet first and are placed there on save.
+     */
+    fun placeKind(k: String, at: Offset?) {
+        showStickers = false
+        if (StickerKinds.needsStatus(k)) {
+            placeAt = at ?: visibleCenter()
+            avatarEdit = null to AvatarLook.decode(avatarPrefs.getString("look", "") ?: "")
+            return
+        }
+        if (StickerKinds.isPet(k)) {
+            placeAt = at ?: visibleCenter()
+            petEdit = null to StickerElement(kind = k, look = Pet.Look().encode(), label = "Mochi")
+            return
+        }
+        if (StickerKinds.isCountdown(k)) {
+            placeAt = at ?: visibleCenter()
+            val cal = java.util.Calendar.getInstance().apply {
+                add(java.util.Calendar.DAY_OF_YEAR, 7); set(java.util.Calendar.HOUR_OF_DAY, 9)
+                set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+            }
+            countdownEdit = null to StickerElement(kind = k, until = cal.timeInMillis, look = "i0")
+            return
+        }
+        val p = at ?: visibleCenter()
+        if (StickerKinds.isFood(k)) {
+            sync.pushSticker(StickerElement(emoji = FallbackEmoji[k] ?: "🥣", kind = k, label = myName(), x = p.x, y = p.y, size = 110f / viewScale))
+            haptic(Haptic.Confirm); tool = Tool.MOVE
+            return
+        }
+        val widget = StickerKinds.isWidget(k)
+        sync.pushSticker(StickerElement(
+            emoji = FallbackEmoji[k] ?: "✨", kind = k,
+            owner = if (widget) myUid() else "",
+            label = if (StickerKinds.needsStats(k)) myName() else "",
+            x = p.x, y = p.y, size = (if (widget) 170f else 140f) / viewScale
+        ))
+        haptic(Haptic.Confirm); tool = Tool.MOVE
+        if (widget) requestLivePerms(k)
+    }
+
+    /** Size (canvas px) a market sticker is placed at. */
+    fun placeSize(k: String) = when {
+        StickerKinds.isFood(k) -> 110f
+        StickerKinds.isPet(k) -> 150f
+        StickerKinds.isWidget(k) -> 170f
+        else -> 140f
+    } / viewScale
+
+    // Meals finish on screen by themselves; write them down and clear the empty bowls.
+    LaunchedEffect(sync) {
+        while (true) {
+            kotlinx.coroutines.delay(1_500L)
+            if (sync.sharedStickers.none { StickerKinds.isFood(it.kind) }) continue
+            val world = sync.sharedStickers.toList()
+            val now = System.currentTimeMillis()
+            world.forEachIndexed { i, p ->
+                if (!StickerKinds.isPet(p.kind)) return@forEachIndexed
+                val key = sync.stickerKeys.getOrNull(i) ?: return@forEachIndexed
+                Pet.settle(p, world, now)?.let { applyPet(key, it) }
+            }
+        }
+    }
 
     // Generous bin zone with hysteresis so small finger jitter never cancels a delete.
     val binEnterPx = with(density) { 190.dp.toPx() }
@@ -381,8 +501,10 @@ fun LiveCanvasScreen(
                             Tool.ERASER -> if (canEdit && !eraseWhole) { eraserPos = startCanvas; sync.erasePointsNear(startCanvas.x, startCanvas.y, eraserWidth / viewScale) }
                             Tool.MOVE, Tool.TEXT -> if (canEdit) {
                                 grabbed = hitTest(startCanvas)
+                                pitMode = isDeadPet(grabbed)
                             }
                         }
+                        grabbed.let { g -> if (g == null || g.first != ElType.STICKER || sync.stickerKeys.getOrNull(g.second) != petFocus) petFocus = null }
 
                         // ── multi-finger tracking ──
                         var prevCount = 0
@@ -459,6 +581,7 @@ fun LiveCanvasScreen(
                                 if (canEdit && grabbed == null && pressed.size == 2) {
                                     grabbed = hitTest(toCanvas(centroid))
                                         ?: pressed.firstNotNullOfOrNull { hitTest(toCanvas(it.position)) }
+                                    pitMode = isDeadPet(grabbed)
                                 }
                                 if (grabbed != null && !draggingEl) { draggingEl = true; haptic(Haptic.Tick) }
                             }
@@ -509,7 +632,11 @@ fun LiveCanvasScreen(
                                 Tool.MOVE, Tool.TEXT -> {
                                     val g = grabbed
                                     if (g != null) {
-                                        if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
+                                        if (draggingEl && overBin && pitMode) {
+                                            val name = sync.sharedStickers.getOrNull(g.second)?.label?.ifBlank { null } ?: "little one"
+                                            deleteEl(g); haptic(Haptic.Reject)
+                                            Toast.makeText(context, "Rest in peace, $name 🐾", Toast.LENGTH_LONG).show()
+                                        } else if (draggingEl && overBin) { deleteEl(g); haptic(Haptic.Reject) }
                                         else if (!draggingEl && g.first == ElType.TEXT) {
                                             sync.sharedTexts.getOrNull(g.second)?.let { t -> editing = TextEdit(t, g.second) }
                                         } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.TEXT &&
@@ -517,6 +644,32 @@ fun LiveCanvasScreen(
                                         ) {
                                             // Text tool + tap on a live sticker → edit its name plate
                                             plateEdit = g.second to sync.sharedStickers[g.second].label
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.needsStatus(it.kind) && it.owner == FirebaseAuth.getInstance().currentUser?.uid } == true
+                                        ) {
+                                            // Tap my own status avatar → change how it looks
+                                            avatarEdit = g.second to AvatarLook.decode(sync.sharedStickers[g.second].look)
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.needsStatus(it.kind) && it.owner.isNotEmpty() } == true
+                                        ) {
+                                            // Tap someone else's avatar → nudge them
+                                            val other = sync.sharedStickers[g.second]
+                                            val who = other.label.ifBlank { "them" }
+                                            if (LiveTracker.nudge(sync.roomId, other.owner)) {
+                                                haptic(Haptic.Confirm); Toast.makeText(context, "Nudged $who 👋", Toast.LENGTH_SHORT).show()
+                                            } else Toast.makeText(context, "You just nudged $who. Give it a moment", Toast.LENGTH_SHORT).show()
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.isCountdown(it.kind) } == true
+                                        ) {
+                                            // Tap a countdown → change its title, date or icon
+                                            countdownEdit = g.second to sync.sharedStickers[g.second]
+                                        } else if (!draggingEl && g.first == ElType.STICKER && activeTool == Tool.MOVE &&
+                                            sync.sharedStickers.getOrNull(g.second)?.let { StickerKinds.isPet(it.kind) } == true
+                                        ) {
+                                            // Tap the pet → its thought cloud (food, health, happiness) and the food / hand tools
+                                            val key = sync.stickerKeys.getOrNull(g.second)
+                                            petFocus = if (petFocus == key) null else key
+                                            if (petFocus != null) { petShown = petFocus; haptic(Haptic.Tick) }
                                         } else if (!draggingEl && g.first == ElType.IMAGE) {
                                             sync.sharedImages.getOrNull(g.second)?.let { img ->
                                                 sync.updateImage(g.second, img.copy(style = (img.style + 1).mod(CanvasRenderer.IMAGE_STYLES)))
@@ -540,7 +693,7 @@ fun LiveCanvasScreen(
                                 }
                             }
                         }
-                        draggingEl = false; overBin = false
+                        draggingEl = false; overBin = false; pitMode = false
                     }
                 }
         ) {
@@ -556,6 +709,17 @@ fun LiveCanvasScreen(
                 sync.sharedImages,
                 strokePaths = sync.strokePaths, decode = false, timeMs = frameMs, roomId = sync.roomId
             )
+            // Sticker waiting for its setup sheet, shown where it was dropped
+            placeAt?.let { at ->
+                val proto = when {
+                    petEdit?.first == null && petEdit != null -> petEdit!!.second
+                    countdownEdit?.first == null && countdownEdit != null -> countdownEdit!!.second
+                    avatarEdit?.first == null && avatarEdit != null -> StickerElement(kind = "w:me", owner = "me", look = avatarEdit!!.second.encode(), label = myName())
+                    else -> null
+                }
+                if (proto != null) StickerArt.draw(nc, proto.copy(x = at.x, y = at.y, size = placeSize(proto.kind), fedAt = System.currentTimeMillis()), frameMs, StickerArt.Preview, "preview")
+            }
+            focusedPet(petShown)?.let { (_, pet) -> StickerArt.petThought(nc, pet, frameMs, screenW / 400f / viewScale, petAppear) }
             if (livePoints.isNotEmpty()) {
                 livePaint.color = penColor.copy(alpha = penAlpha).toArgb()
                 livePaint.strokeWidth = penWidth / viewScale
@@ -810,7 +974,16 @@ fun LiveCanvasScreen(
                 enter = fadeIn() + scaleIn(spring(0.5f, 400f)), exit = fadeOut() + scaleOut()
             ) {
                 val s by animateFloatAsState(if (overBin) 1.25f else 1f, spring(0.5f, 500f), label = "bin")
-                Box(
+                if (pitMode) {
+                    // Easter egg: a dead pet gets a little pit instead of the bin.
+                    Canvas(Modifier.size((150 * s).dp, (96 * s).dp)) {
+                        val k = size.width / 110f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height * 0.62f); nc.scale(k, k)
+                        StickerArt.pit(nc, frameMs, overBin)
+                        nc.restore()
+                    }
+                } else Box(
                     Modifier.size((64 * s).dp).glass(CircleShape, strong = true, tint = if (overBin) ErrorRed.copy(alpha = 0.6f) else null),
                     contentAlignment = Alignment.Center
                 ) { Icon(Icons.Rounded.DeleteOutline, "Delete", tint = if (overBin) Color.White else c.textPrimary, modifier = Modifier.size((28 * s).dp)) }
@@ -821,7 +994,7 @@ fun LiveCanvasScreen(
             }
 
             // ═════════ Sheets ═════════
-            GlassSheet(showStickers, { showStickers = false; dragEmoji = null }) {
+            GlassSheet(showStickers, { showStickers = false; dragEmoji = null; dragKind = null }, faded = dragKind != null || dragEmoji != null) {
                 var tab by remember { mutableIntStateOf(0) }
                 GlassSegmented(
                     listOf(Icons.Rounded.EmojiEmotions to null, Icons.Rounded.AutoAwesome to null, Icons.Rounded.Sensors to null),
@@ -864,19 +1037,78 @@ fun LiveCanvasScreen(
                             }
                         }
                         }
-                        else -> StickerMarket(if (t == 1) StickerKinds.animated else StickerKinds.widgets, if (t == 1) 4 else 2) { k ->
-                            val p = visibleCenter()
-                            val widget = StickerKinds.isWidget(k)
-                            sync.pushSticker(StickerElement(
-                                emoji = FallbackEmoji[k] ?: "✨", kind = k,
-                                owner = if (widget) FirebaseAuth.getInstance().currentUser?.uid ?: "" else "",
-                                label = if (StickerKinds.needsStats(k)) FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "" else "",
-                                x = p.x, y = p.y, size = (if (widget) 170f else 140f) / viewScale
-                            ))
-                            haptic(Haptic.Confirm); showStickers = false; tool = Tool.MOVE
-                            if (widget) requestLivePerms(k)
-                        }
+                        else -> StickerMarket(
+                            if (t == 1) StickerKinds.animated else StickerKinds.widgets, if (t == 1) 4 else 2,
+                            dimmed = dragKind != null,
+                            onDragStart = { k, pos -> dragKind = k; dragEmojiPos = pos; haptic(Haptic.Tick) },
+                            onDrag = { dragEmojiPos += it },
+                            onDragEnd = {
+                                val k = dragKind
+                                dragKind = null
+                                if (k != null) {
+                                    // Drop it where the floating sticker is (just above the finger).
+                                    val p = toCanvas(dragEmojiPos + Offset(0f, -DRAG_LIFT))
+                                    placeKind(k, Offset(p.x, p.y + placeSize(k) * 0.3f))
+                                }
+                            },
+                            onDragCancel = { dragKind = null },
+                        ) { k -> placeKind(k, null) }
                     }
+                }
+            }
+
+            GlassSheet(avatarEdit != null, { avatarEdit = null; placeAt = null }) {
+                val ae = avatarEdit
+                if (ae != null) AvatarBuilder(ae.second, isNew = ae.first == null) { look ->
+                    avatarPrefs.edit().putString("look", look.encode()).apply()
+                    val idx = ae.first
+                    if (idx == null) {
+                        val p = placeAt ?: visibleCenter()
+                        placeAt = null
+                        sync.pushSticker(StickerElement(
+                            emoji = FallbackEmoji["w:me"] ?: "🧍", kind = "w:me",
+                            owner = FirebaseAuth.getInstance().currentUser?.uid ?: "",
+                            label = FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "",
+                            look = look.encode(), x = p.x, y = p.y, size = 170f / viewScale
+                        ))
+                        tool = Tool.MOVE
+                        requestLivePerms("w:me")
+                    } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(look = look.encode())) }
+                    haptic(Haptic.Confirm); avatarEdit = null
+                }
+            }
+
+            GlassSheet(petEdit != null, { petEdit = null; placeAt = null }) {
+                val pe = petEdit
+                if (pe != null) PetSheet(pe.second, onDraft = { name, look -> petEdit = pe.copy(second = pe.second.copy(label = name, look = look)) }) { name, look ->
+                    val p = placeAt ?: visibleCenter()
+                    placeAt = null
+                    val now = System.currentTimeMillis()
+                    val pet = StickerElement(
+                        emoji = FallbackEmoji["w:pet"] ?: "🐾", kind = "w:pet", owner = myUid(),
+                        label = name, look = look, x = p.x, y = p.y, size = 150f / viewScale
+                    )
+                    sync.pushSticker(Pet.adopt(pet, myName(), now))
+                    tool = Tool.MOVE
+                    haptic(Haptic.Confirm); petEdit = null
+                }
+            }
+
+            GlassSheet(countdownEdit != null, { countdownEdit = null; placeAt = null }) {
+                val ce = countdownEdit
+                if (ce != null) CountdownBuilder(ce.second, isNew = ce.first == null) { title, until, icon ->
+                    val idx = ce.first
+                    if (idx == null) {
+                        val p = placeAt ?: visibleCenter()
+                        placeAt = null
+                        sync.pushSticker(StickerElement(
+                            emoji = FallbackEmoji["w:countdown"] ?: "⏳", kind = "w:countdown",
+                            owner = FirebaseAuth.getInstance().currentUser?.uid ?: "",
+                            label = title, look = "i$icon", until = until, x = p.x, y = p.y, size = 170f / viewScale
+                        ))
+                        tool = Tool.MOVE
+                    } else sync.sharedStickers.getOrNull(idx)?.let { sync.updateSticker(idx, it.copy(label = title, look = "i$icon", until = until)) }
+                    haptic(Haptic.Confirm); countdownEdit = null
                 }
             }
 
@@ -926,6 +1158,95 @@ fun LiveCanvasScreen(
                         if (!readOnly) SheetAction(Icons.Rounded.DeleteSweep, "Clear", { showMore = false; confirmClear = true }, Modifier.weight(1f), color = ErrorRed)
                     }
                 }
+            }
+        }
+
+        // ═════════ Pet tools: drag food anywhere, drag the hand onto the pet ═════════
+        val focused = focusedPet()
+        val petAlive = focused != null && !Pet.isDead(focused.second, sync.sharedStickers, System.currentTimeMillis())
+        val toolsOn = petAlive && !readOnly && !draggingEl
+        @Composable
+        fun PetTool(which: String, label: String, align: Alignment, fromLeft: Boolean) {
+            AnimatedVisibility(
+                toolsOn, modifier = Modifier.align(align).navigationBarsPadding().padding(bottom = 96.dp, start = 18.dp, end = 18.dp),
+                enter = slideInHorizontally(Motion.bouncy()) { if (fromLeft) -it * 2 else it * 2 } + fadeIn(),
+                exit = slideOutHorizontally { if (fromLeft) -it * 2 else it * 2 } + fadeOut()
+            ) {
+                var chipPos by remember { mutableStateOf(Offset.Zero) }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.size(78.dp).glass(CircleShape, strong = true)
+                            .onGloballyPositioned { chipPos = it.positionInRoot() }
+                            .pointerInput(which) {
+                                detectDragGestures(
+                                    onDragStart = { o -> toolDrag = which; toolPos = chipPos + o; haptic(Haptic.Tick) },
+                                    onDrag = { ch, amt -> ch.consume(); toolPos += amt },
+                                    onDragEnd = {
+                                        val drop = toCanvas(toolPos + Offset(0f, -DRAG_LIFT))
+                                        val now = System.currentTimeMillis()
+                                        val fp = focusedPet()
+                                        if (which == "food") {
+                                            val sz = placeSize("w:food")
+                                            sync.pushSticker(StickerElement(emoji = FallbackEmoji["w:food"] ?: "🥣", kind = "w:food", label = myName(),
+                                                x = drop.x, y = drop.y + sz * 0.3f, size = sz))
+                                            haptic(Haptic.Confirm)
+                                        } else if (fp != null) {
+                                            val (key, pet) = fp
+                                            val pose = Pet.pose(pet, now, sync.sharedStickers)
+                                            val reach = pet.size * pet.scale * pose.stage.scale * 0.75f + 40f / viewScale
+                                            val cy = pose.y - pet.size * pet.scale * 0.35f
+                                            val hit = kotlin.math.hypot(drop.x - pose.x, drop.y - cy) < reach
+                                            val r = if (hit) Pet.pet(pet, sync.sharedStickers, myName(), now, pose.x, pose.y) else null
+                                            if (r != null) { applyPet(key, r); haptic(Haptic.Confirm) } else haptic(Haptic.Reject)
+                                        }
+                                        toolDrag = null
+                                    },
+                                    onDragCancel = { toolDrag = null }
+                                )
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val t = frameMs
+                        Canvas(Modifier.size(56.dp).alpha(if (toolDrag == which) 0.25f else 1f)) {
+                            val k = size.minDimension / 60f
+                            val nc = drawContext.canvas.nativeCanvas
+                            nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                            if (which == "food") StickerArt.bowlIcon(nc, t) else { nc.translate(0f, 4f); StickerArt.hand(nc) }
+                            nc.restore()
+                        }
+                    }
+                    Text(label, color = c.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 6.dp).glass(CircleShape, strong = true).padding(horizontal = 10.dp, vertical = 3.dp))
+                }
+            }
+        }
+        PetTool("food", "Food", Alignment.BottomStart, fromLeft = true)
+        PetTool("hand", "Pet", Alignment.BottomEnd, fromLeft = false)
+
+        // ═════════ Things being dragged out (on top of everything) ═════════
+        toolDrag?.let { which ->
+            Canvas(Modifier.fillMaxSize()) {
+                val nc = drawContext.canvas.nativeCanvas
+                val k = 72.dp.toPx() / 60f
+                nc.save(); nc.translate(toolPos.x, toolPos.y - DRAG_LIFT); nc.scale(k, k)
+                if (which == "food") StickerArt.bowlIcon(nc, frameMs) else { nc.rotate(sin(frameMs / 120f) * 8f); StickerArt.hand(nc) }
+                nc.restore()
+            }
+        }
+        dragKind?.let { k ->
+            Canvas(Modifier.fillMaxSize()) {
+                val sz = placeSize(k) * viewScale
+                val y = dragEmojiPos.y - DRAG_LIFT + sz * 0.3f
+                val proto = StickerElement(
+                    kind = k, owner = "me", x = dragEmojiPos.x, y = y, size = sz,
+                    label = when { StickerKinds.isCountdown(k) -> "Until we meet"; StickerKinds.isPet(k) -> "Mochi"; StickerKinds.needsStats(k) || StickerKinds.needsStatus(k) -> myName(); else -> "" },
+                    until = if (StickerKinds.isCountdown(k)) System.currentTimeMillis() + 12 * Pet.DAY else 0L,
+                    fedAt = System.currentTimeMillis(),
+                )
+                val nc = drawContext.canvas.nativeCanvas
+                nc.save(); nc.scale(1.06f, 1.06f, dragEmojiPos.x, dragEmojiPos.y - DRAG_LIFT) // lifted
+                StickerArt.draw(nc, proto, frameMs, StickerArt.Preview, "preview")
+                nc.restore()
             }
         }
     }
@@ -993,34 +1314,390 @@ private fun fontFamilyFor(font: Int) = fontFamilies.getOrPut(font.mod(CanvasRend
 }
 
 /** Shown by older app versions that don't know animated / live stickers. */
+/** Things dragged with a finger float this far (px) above it, so the finger doesn't hide them. */
+private const val DRAG_LIFT = 140f
+
 private val FallbackEmoji = mapOf(
     "a:heart" to "❤️", "a:star" to "⭐", "a:fire" to "🔥", "a:sun" to "☀️", "a:moon" to "🌙", "a:ghost" to "👻",
     "a:party" to "🎉", "a:rainbow" to "🌈", "a:love" to "💕", "w:dist" to "📍", "w:steps" to "👣", "w:km" to "🗺️",
-    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆",
+    "w:speed" to "🏍️", "w:steps_km" to "👣", "w:speed_km" to "🏍️", "w:board" to "🏆", "w:me" to "🧍",
+    "w:clock" to "🕒", "w:analog" to "🕰️", "w:countdown" to "⏳", "w:pet" to "🐾", "w:food" to "🥣",
 )
+
+/**
+ * Adopt the shared pet: name, species, colour. Only shown once, when it's placed; after that
+ * you look after it on the canvas (tap it), and it can't be changed into another animal.
+ */
+@Composable
+private fun PetSheet(pet: StickerElement, onDraft: (name: String, look: String) -> Unit, onAdopt: (name: String, look: String) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    var name by remember { mutableStateOf(pet.label.ifBlank { "Mochi" }) }
+    var look by remember { mutableStateOf(Pet.look(pet.look)) }
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    LaunchedEffect(name, look) { onDraft(name.trim(), look.encode()) }
+
+    @Composable
+    fun Label(text: String) = Text(text, color = c.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp))
+
+    Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+        Text("Adopt a pet", color = c.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Label("Pet")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pet.SPECIES.forEachIndexed { i, sp ->
+                val sel = i == look.species
+                Column(
+                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) c.accent.copy(alpha = 0.18f) else c.textPrimary.copy(alpha = 0.05f))
+                        .border(if (sel) 2.dp else 0.dp, if (sel) c.accent else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable { haptic(Haptic.Tick); look = look.copy(species = i) }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Canvas(Modifier.size(60.dp)) {
+                        val k = size.minDimension / 92f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                        StickerArt.petPreview(nc, look.copy(species = i).encode(), t, Pet.Stage.BABY)
+                        nc.restore()
+                    }
+                    Text(sp, color = c.textSecondary, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Label("Colour")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Pet.COLORS.forEachIndexed { i, col ->
+                val sel = i == look.color
+                Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(Color(col))
+                        .border(if (sel) 3.dp else 1.dp, if (sel) c.accent else c.glassBorder, CircleShape)
+                        .clickable { haptic(Haptic.Tick); look = look.copy(color = i) }
+                )
+            }
+        }
+        Label("Name")
+        GlassTextField(name, { if (it.length <= 12) name = it }, placeholder = "Mochi", leadingIcon = Icons.Rounded.Pets)
+        Text(
+            "Everyone in this canvas shares it. Tap it to see how it's doing, drag food out for it and pet it with the hand. " +
+                "It needs food and love: an unhappy pet won't eat, and too much food makes it sick. You can't change the animal later.",
+            color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)
+        )
+        AccentButton({ onAdopt(name.trim().ifBlank { "Mochi" }, look.encode()) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = "Adopt")
+    }
+}
+
+/** Set up a countdown: title, date and time, and an icon/colour theme. */
+@Composable
+private fun CountdownBuilder(initial: StickerElement, isNew: Boolean, onSave: (title: String, until: Long, icon: Int) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    val context = LocalContext.current
+    var title by remember { mutableStateOf(initial.label) }
+    var until by remember { mutableLongStateOf(initial.until) }
+    var icon by remember { mutableIntStateOf(StickerArt.countdownIconOf(initial.look)) }
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val cal = remember(until) { java.util.Calendar.getInstance().apply { timeInMillis = until } }
+    val is24 = remember { android.text.format.DateFormat.is24HourFormat(context) }
+    val dateText = remember(until) { java.text.SimpleDateFormat("EEE, d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(until)) }
+    val timeText = remember(until, is24) { java.text.SimpleDateFormat(if (is24) "HH:mm" else "h:mm a", java.util.Locale.getDefault()).format(java.util.Date(until)) }
+
+    @Composable
+    fun Label(text: String) = Text(text, color = c.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp))
+
+    @Composable
+    fun Pick(modifier: Modifier, iconV: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit) {
+        Row(
+            modifier.height(52.dp).clip(RoundedCornerShape(16.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                .clickable { haptic(Haptic.Tick); onClick() }.padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(iconV, null, tint = c.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(text, color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.6f).clip(RoundedCornerShape(22.dp)).background(c.textPrimary.copy(alpha = 0.05f))) {
+            Canvas(Modifier.fillMaxSize()) {
+                val (hw, hh) = StickerArt.halfSize("w:countdown")
+                val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
+                val sz = u * 100f
+                val st = StickerElement(kind = "w:countdown", label = title, look = "i$icon", until = until,
+                    x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, null, null)
+            }
+        }
+        Label("What are you counting down to?")
+        GlassTextField(title, { if (it.length <= 20) title = it }, placeholder = "Until we meet", leadingIcon = Icons.Rounded.Edit)
+        Label("When")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Pick(Modifier.weight(1.4f), Icons.Rounded.CalendarMonth, dateText) {
+                android.app.DatePickerDialog(context, { _, y, mo, d ->
+                    until = (cal.clone() as java.util.Calendar).apply { set(y, mo, d) }.timeInMillis
+                }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH)).show()
+            }
+            Pick(Modifier.weight(1f), Icons.Rounded.Schedule, timeText) {
+                android.app.TimePickerDialog(context, { _, h, mi ->
+                    until = (cal.clone() as java.util.Calendar).apply { set(java.util.Calendar.HOUR_OF_DAY, h); set(java.util.Calendar.MINUTE, mi); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }.timeInMillis
+                }, cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE), is24).show()
+            }
+        }
+        Label("Icon")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StickerArt.COUNTDOWN_ICONS.forEachIndexed { i, name ->
+                val sel = i == icon
+                Column(
+                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) c.accent.copy(alpha = 0.18f) else c.textPrimary.copy(alpha = 0.05f))
+                        .border(if (sel) 2.dp else 0.dp, if (sel) c.accent else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable { haptic(Haptic.Tick); icon = i }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Canvas(Modifier.size(44.dp)) {
+                        val k = size.minDimension / 50f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                        StickerArt.countdownIcon(nc, i, t)
+                        nc.restore()
+                    }
+                    Text(name, color = c.textSecondary, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Text(
+            "Everyone in this canvas sees the same countdown and can tap it to change it.",
+            color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)
+        )
+        AccentButton({ onSave(title.trim(), until, icon) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Add sticker" else "Save")
+    }
+}
+
+/** Dress-up sheet for the status avatar, with a live preview of every scene. */
+@Composable
+private fun AvatarBuilder(initial: AvatarLook, isNew: Boolean, onSave: (AvatarLook) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    var look by remember { mutableStateOf(initial) }
+    var t by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val scenes = listOf(
+        Status.PHONE to "Phone", Status.RIDE to "Riding", Status.WALK to "Walking", Status.MUSIC to "Music",
+        Status.CHARGE to "Charging", Status.SLEEP to "Sleeping", Status.CYCLE to "Cycling", Status.AWAY to "Chilling", Status.GHOST to "Ghost",
+    )
+    var scene by remember { mutableStateOf(Status.PHONE) }
+    val src = remember(scene) {
+        object : LiveSource {
+            override val myUid = "me"
+            override fun stats(uid: String): LiveStats {
+                val now = System.currentTimeMillis()
+                return LiveStats(status = scene, statusAt = now - 17 * 60_000L, updatedAt = now,
+                    battery = if (scene == Status.CHARGE) 41 else 78, charging = scene == Status.CHARGE)
+            }
+            override fun presence(roomId: String) = emptyMap<String, Presence>()
+        }
+    }
+    val name = remember { FirebaseAuth.getInstance().currentUser?.displayName?.trim()?.split(' ')?.firstOrNull()?.take(12) ?: "" }
+
+    @Composable
+    fun Swatches(colors: IntArray, selected: Int, onPick: (Int) -> Unit) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            colors.forEachIndexed { i, col ->
+                val sel = i == selected
+                Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(Color(col))
+                        .border(if (sel) 3.dp else 1.dp, if (sel) c.accent else c.glassBorder, CircleShape)
+                        .clickable { haptic(Haptic.Tick); onPick(i) }
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun Label(text: String) = Text(text, color = c.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp))
+
+    Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.3f).clip(RoundedCornerShape(22.dp)).background(c.textPrimary.copy(alpha = 0.05f))) {
+            Canvas(Modifier.fillMaxSize()) {
+                val (hw, hh) = StickerArt.halfSize("w:me")
+                val u = minOf(size.width * 0.9f / (2 * hw), size.height * 0.86f / (2 * hh))
+                val sz = u * 100f
+                val st = StickerElement(kind = "w:me", owner = "me", label = name, look = look.encode(),
+                    x = size.width / 2, y = size.height / 2 + sz * 0.35f + 6f, size = sz)
+                StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, src, "preview")
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            scenes.forEach { (k, label) ->
+                val sel = k == scene
+                Text(
+                    label, color = if (sel) c.onAccent else c.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clip(CircleShape).background(if (sel) c.accent else c.textPrimary.copy(alpha = 0.07f))
+                        .clickable { haptic(Haptic.Tick); scene = k }.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+        }
+
+        if (!isNew) GhostControls { on -> scene = if (on) Status.GHOST else Status.PHONE }
+
+        Label("Avatar")
+        GlassSegmented(
+            listOf(Icons.Rounded.Male to "Boy", Icons.Rounded.Female to "Girl"), look.gender,
+            onSelect = { look = look.copy(gender = it) }
+        )
+        Label("Skin")
+        Swatches(AvatarLook.SKINS, look.skin) { look = look.copy(skin = it) }
+        Label("Hair")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AvatarLook.HAIR_NAMES[look.gender].forEachIndexed { i, hairName ->
+                val sel = i == look.hair
+                Column(
+                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .background(if (sel) c.accent.copy(alpha = 0.18f) else c.textPrimary.copy(alpha = 0.05f))
+                        .border(if (sel) 2.dp else 0.dp, if (sel) c.accent else Color.Transparent, RoundedCornerShape(16.dp))
+                        .clickable { haptic(Haptic.Tick); look = look.copy(hair = i) }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Canvas(Modifier.size(48.dp)) {
+                        val k = size.minDimension / 46f
+                        val nc = drawContext.canvas.nativeCanvas
+                        nc.save(); nc.translate(size.width / 2, size.height / 2); nc.scale(k, k)
+                        StickerArt.avatarHead(nc, look.copy(hair = i), t)
+                        nc.restore()
+                    }
+                    Text(hairName, color = c.textSecondary, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Label("Hair colour")
+        Swatches(AvatarLook.HAIR_COLORS, look.hairColor) { look = look.copy(hairColor = it) }
+        Label("Outfit")
+        Swatches(AvatarLook.OUTFITS, look.outfit) { look = look.copy(outfit = it) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f)) {
+                Label("Card")
+                GlassSegmented(listOf(Icons.Rounded.LightMode to "Day", Icons.Rounded.DarkMode to "Night"), look.dark, onSelect = { look = look.copy(dark = it) })
+            }
+            Column(Modifier.weight(1f)) {
+                Label("Rides a")
+                GlassSegmented(listOf(Icons.Rounded.TwoWheeler to "Bike", Icons.Rounded.Moped to "Scooter"), look.ride,
+                    onSelect = { look = look.copy(ride = it); scene = Status.RIDE })
+            }
+        }
+        Text(
+            "Shows what you're up to — on the phone, riding, walking, music, charging or asleep — from your screen, charger and motion. Use ghost mode to pause, or delete the sticker to stop sharing.",
+            color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp)
+        )
+        AccentButton({ onSave(look) }, Modifier.fillMaxWidth().padding(top = 14.dp), text = if (isNew) "Add sticker" else "Save")
+    }
+}
+
+/**
+ * Ghost mode: pause sharing status, battery and location for a while, without deleting
+ * stickers. Others see a ghost "on a break". [onChange] is told when it's turned on/off.
+ */
+@Composable
+private fun GhostControls(onChange: (Boolean) -> Unit) {
+    val c = LocalWallpaperColors.current
+    val haptic = rememberHaptics()
+    val context = LocalContext.current
+    var until by remember { mutableLongStateOf(LiveTracker.ghostUntil(context)) }
+    fun set(u: Long) { LiveTracker.setGhost(context, u); until = LiveTracker.ghostUntil(context); haptic(Haptic.Confirm); onChange(u > 0) }
+    val nextMorning = remember {
+        java.util.Calendar.getInstance().apply {
+            if (get(java.util.Calendar.HOUR_OF_DAY) >= 9) add(java.util.Calendar.DAY_OF_YEAR, 1)
+            set(java.util.Calendar.HOUR_OF_DAY, 9); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+    val on = until > 0
+    val untilText = when {
+        !on -> ""
+        until == Long.MAX_VALUE -> "Paused until you turn it off"
+        else -> {
+            val is24 = android.text.format.DateFormat.is24HourFormat(context)
+            val sameDay = android.text.format.DateUtils.isToday(until)
+            "Paused until " + java.text.SimpleDateFormat((if (sameDay) "" else "EEE ") + (if (is24) "HH:mm" else "h:mm a"), java.util.Locale.getDefault()).format(java.util.Date(until))
+        }
+    }
+
+    @Composable
+    fun Chip(text: String, onClick: () -> Unit) = Text(
+        text, color = c.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+        modifier = Modifier.clip(CircleShape).background(c.textPrimary.copy(alpha = 0.08f))
+            .clickable { onClick() }.padding(horizontal = 12.dp, vertical = 8.dp)
+    )
+
+    Column(
+        Modifier.fillMaxWidth().padding(top = 14.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (on) c.accent.copy(alpha = 0.16f) else c.textPrimary.copy(alpha = 0.05f)).padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (on) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, null, tint = if (on) c.accent else c.textSecondary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Ghost mode", color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (on) untilText else "Pause sharing your status, battery and location",
+                    color = c.textSecondary, fontSize = 12.sp
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (on) Chip("Turn off") { set(0L) }
+            else {
+                Chip("1 hour") { set(System.currentTimeMillis() + 3_600_000L) }
+                Chip("Until morning") { set(nextMorning) }
+                Chip("Until I turn it off") { set(Long.MAX_VALUE) }
+            }
+        }
+    }
+}
 
 /** Grid of animated / live stickers, each previewed live with sample data. */
 @Composable
-private fun StickerMarket(kinds: List<String>, columns: Int, onPick: (String) -> Unit) {
+private fun StickerMarket(
+    kinds: List<String>, columns: Int, dimmed: Boolean = false,
+    onDragStart: (String, Offset) -> Unit = { _, _ -> }, onDrag: (Offset) -> Unit = {}, onDragEnd: () -> Unit = {}, onDragCancel: () -> Unit = {},
+    onPick: (String) -> Unit,
+) {
     val c = LocalWallpaperColors.current
     var t by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) { while (true) withFrameMillis { t = it } }
+    val sampleUntil = remember { System.currentTimeMillis() + 12 * 86_400_000L + 4 * 3_600_000L + 22 * 60_000L }
     LazyVerticalGrid(
         GridCells.Fixed(columns), Modifier.fillMaxWidth().heightIn(max = 380.dp),
         contentPadding = PaddingValues(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         itemsIndexed(kinds) { i, k ->
             val src = remember { MutableInteractionSource() }
+            var cellPos by remember { mutableStateOf(Offset.Zero) }
             Box(
                 Modifier.enterAnim(i).aspectRatio(if (StickerKinds.isWidget(k)) 1.45f else 1f).pressScale(src, 0.9f)
+                    .alpha(if (dimmed) 0.15f else 1f)
                     .clip(RoundedCornerShape(18.dp)).background(c.textPrimary.copy(alpha = 0.06f))
+                    .onGloballyPositioned { cellPos = it.positionInRoot() }
+                    // Hold to pick it up and drag it onto the canvas; tap drops it in the middle.
+                    .pointerInput(k) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { o -> onDragStart(k, cellPos + o) },
+                            onDrag = { ch, amt -> ch.consume(); onDrag(amt) },
+                            onDragEnd = onDragEnd,
+                            onDragCancel = onDragCancel,
+                        )
+                    }
                     .clickable(src, null) { onPick(k) }
             ) {
                 Canvas(Modifier.fillMaxSize()) {
                     val (hw, hh) = StickerArt.halfSize(k)
                     val u = minOf(size.width * 0.86f / (2 * hw), size.height * 0.8f / (2 * hh))
                     val sz = u * 100f
-                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz)
+                    val cd = StickerKinds.isCountdown(k)
+                    val st = StickerElement(kind = k, owner = "me", x = size.width / 2, y = size.height / 2 + sz * 0.35f, size = sz,
+                        label = if (cd) "Until we meet" else if (StickerKinds.isPet(k)) "Mochi" else "",
+                        until = if (cd) sampleUntil else 0L,
+                        fedAt = if (StickerKinds.isPet(k)) System.currentTimeMillis() else 0L)
                     StickerArt.draw(drawContext.canvas.nativeCanvas, st, t, StickerArt.Preview, "preview")
                 }
             }

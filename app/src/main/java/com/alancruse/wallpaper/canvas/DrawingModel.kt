@@ -34,6 +34,32 @@ data class StickerElement(
     val owner: String = "",
     /** Name plate on live stickers ("Araf", "Sneha"…), editable with the text tool. */
     val label: String = "",
+    /** Avatar look for the status sticker (see AvatarLook), e.g. "g1s2h0c3o4d0r0". */
+    val look: String = "",
+    /** Countdown sticker: the moment it counts down to (epoch ms, 0 = not set). */
+    val until: Long = 0L,
+    /** Shared pet: when it was last fed / played with, by whom, and the feeding streak. */
+    val fedAt: Long = 0L,
+    val playedAt: Long = 0L,
+    val careBy: String = "",
+    val streak: Int = 0,
+    /** Day (yyyy-MM-dd, the carer's calendar) of the feeding that counted towards [streak]. */
+    val streakDay: String = "",
+    /** Shared pet: when it was adopted (its age decides baby → young → adult → old). */
+    val bornAt: Long = 0L,
+    /**
+     * Shared pet's vitals as of [vitalsAt] (0..1 each; [bloat] is how much it was overfed).
+     * Everything after that moment is worked out from the time and the food on the canvas.
+     */
+    val full: Float = 1f,
+    val joy: Float = 1f,
+    val hp: Float = 1f,
+    val bloat: Float = 0f,
+    val vitalsAt: Long = 0L,
+    /** Shared pet: where it was being petted, and when it was last cheered up from miserable. */
+    val petX: Float = 0f,
+    val petY: Float = 0f,
+    val cheerAt: Long = 0L,
     val timestamp: Long = System.currentTimeMillis()
 )
 

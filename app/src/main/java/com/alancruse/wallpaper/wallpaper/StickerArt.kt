@@ -2,7 +2,10 @@ package com.alancruse.wallpaper.wallpaper
 
 import android.graphics.*
 import com.alancruse.wallpaper.canvas.StickerElement
+import com.alancruse.wallpaper.live.AvatarLook
 import com.alancruse.wallpaper.live.LiveSource
+import com.alancruse.wallpaper.live.Pet
+import com.alancruse.wallpaper.live.Status
 import com.alancruse.wallpaper.live.LiveStats
 import com.alancruse.wallpaper.live.Presence
 import com.alancruse.wallpaper.live.haversineKm
@@ -38,13 +41,25 @@ object StickerArt {
         "w:steps_km", "w:speed_km" -> 98f to 60f
         "w:board" -> 118f to 80f
         "w:dist" -> 112f to 88f
+        "w:me" -> 100f to 82f
+        "w:clock" -> 82f to 60f
+        "w:analog" -> 54f to 56f
+        "w:countdown" -> 94f to 64f
+        "w:pet" -> 46f to 50f
+        "w:food" -> 30f to 24f
         else -> 50f to 50f
+    }
+
+    /** Just the avatar's head, centred on (0, 0) in a ~40-unit box — for the look picker. */
+    fun avatarHead(c: Canvas, look: AvatarLook, timeMs: Long) {
+        head(c, 0f, 3f, look, (timeMs % 3_600_000L) / 1000f, Eyes.OPEN, lookX = 0f)
     }
 
     /** Visual centre: emoji stickers are drawn on a baseline, so keep the same anchor. */
     fun centerY(st: StickerElement) = st.y - st.size * st.scale * 0.35f
 
     fun draw(c: Canvas, st: StickerElement, timeMs: Long, src: LiveSource?, roomId: String?) {
+        if (st.kind == "w:pet") { drawPet(c, st, timeMs, src, roomId); return }
         val u = st.size * st.scale / 100f
         val s = (timeMs % 3_600_000L) / 1000f
         c.save()
@@ -68,6 +83,11 @@ object StickerArt {
                 "w:speed_km" -> { speedKmCard(c, s, src?.stats(st.owner)); plate(c, st.label, -55f) }
                 "w:board" -> { billboard(c, s, src?.stats(st.owner)); plate(c, st.label, -74f) }
                 "w:dist" -> distance(c, s, src, roomId)
+                "w:me" -> me(c, s, st, src)
+                "w:clock" -> digitalClock(c)
+                "w:analog" -> analogClock(c)
+                "w:countdown" -> countdown(c, s, st)
+                "w:food" -> foodBowl(c, s, st, src, roomId)
                 else -> { fill.color = INK; c.drawCircle(0f, 0f, 20f, fill) }
             }
         } finally { c.restore() }
@@ -635,11 +655,1408 @@ object StickerArt {
         }
     }
 
+    // ═════════ Clocks ("w:clock", "w:analog") ═════════
+    //
+    // The viewer's own local time, so each phone shows its own clock.
+
+    /** Follows the phone's 12/24-hour setting; set by whoever hosts the canvas. */
+    @Volatile var use24h = false
+    /** Wall-clock source (swapped in tests). */
+    internal var clockNow: () -> Long = { System.currentTimeMillis() }
+    private val cal = java.util.Calendar.getInstance()
+    private var clockKey = Long.MIN_VALUE
+    private var clock24 = false
+    private var hourText = ""
+    private var minText = ""
+    private var dateText = ""
+    private val DAYS = arrayOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+    private val MONTHS = arrayOf("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+    /** Milliseconds since local midnight. Labels are rebuilt at most once a minute. */
+    private fun localMs(): Long {
+        val now = clockNow()
+        val tz = java.util.TimeZone.getDefault()
+        val local = now + tz.getOffset(now)
+        val day = ((local % 86_400_000L) + 86_400_000L) % 86_400_000L
+        val minute = Math.floorDiv(local, 60_000L)
+        if (minute != clockKey || clock24 != use24h) {
+            clockKey = minute; clock24 = use24h
+            cal.timeZone = tz; cal.timeInMillis = now
+            val h24 = (day / 3_600_000L).toInt(); val m = ((day / 60_000L) % 60).toInt()
+            hourText = if (use24h) "%02d".format(h24) else ((h24 + 11) % 12 + 1).toString()
+            minText = "%02d".format(m)
+            dateText = "${DAYS[cal.get(java.util.Calendar.DAY_OF_WEEK) - 1]} · ${cal.get(java.util.Calendar.DAY_OF_MONTH)} ${MONTHS[cal.get(java.util.Calendar.MONTH)]}"
+        }
+        return day
+    }
+
+    private fun digitalClock(c: Canvas) {
+        val ms = localMs()
+        val h24 = (ms / 3_600_000L).toInt()
+        val night = h24 >= 19 || h24 < 6
+        card(c, 160f, 108f, if (night) 0xFF4C3FA8.toInt() else 0xFF38A3F5.toInt())
+        // Sun or moon in the corner
+        if (night) {
+            aux.reset(); aux.addCircle(-58f, -32f, 9f, Path.Direction.CW)
+            under.reset(); under.addCircle(-53f, -36f, 8f, Path.Direction.CW)
+            aux.op(under, Path.Op.DIFFERENCE)
+            toon(c, aux, 0xFFFFE9A8.toInt(), depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+        } else {
+            val a0 = (ms % 20_000L) / 20_000f * 360f
+            line.strokeWidth = 2.5f; line.color = 0xFFFFD43B.toInt()
+            for (i in 0 until 8) {
+                val a = Math.toRadians((a0 + i * 45f).toDouble())
+                c.drawLine(-58f + cos(a).toFloat() * 10f, -32f + sin(a).toFloat() * 10f, -58f + cos(a).toFloat() * 14f, -32f + sin(a).toFloat() * 14f, line)
+            }
+            line.color = INK
+            circle(c, -58f, -32f, 7f, 0xFFFFD43B.toInt(), depth = 2f)
+        }
+        if (!use24h) chunky(c, if (h24 < 12) "AM" else "PM", 60f, -26f, 12f, 0xFFFFF3B0.toInt())
+        val y = 16f
+        // Centre "h:mm" as a group so a one-digit hour doesn't sit off to the right.
+        txt.textSize = 46f
+        val x0 = (txt.measureText(hourText) - txt.measureText(minText)) / 2f
+        chunky(c, hourText, x0 - 7f, y, 46f, align = Paint.Align.RIGHT)
+        chunky(c, minText, x0 + 7f, y, 46f, align = Paint.Align.LEFT)
+        val on = ms % 1000L < 500L
+        chunky(c, ":", x0, y - 3f, 40f, alpha = if (on) 255 else 70)
+        chunky(c, dateText, 0f, 42f, 12.5f, 0xFFE8F4FF.toInt())
+    }
+
+    private fun analogClock(c: Canvas) {
+        val ms = localMs()
+        aux.reset(); aux.addCircle(0f, 0f, 46f, Path.Direction.CW)
+        toon(c, aux, 0xFFFF7A59.toInt(), depth = 7f, stroke = 5f, gloss = false)
+        // Face
+        fill.color = 0xFFFFF8EC.toInt(); c.drawCircle(0f, 0f, 37f, fill)
+        line.strokeWidth = 3.5f; line.color = INK; c.drawCircle(0f, 0f, 37f, line)
+        for (i in 0 until 60) {
+            val a = i * PI / 30
+            val major = i % 5 == 0
+            if (major && i % 15 == 0) continue
+            val r0 = if (major) 29f else 32.5f
+            line.strokeWidth = if (major) 3f else 1.4f
+            c.drawLine(sin(a).toFloat() * r0, -cos(a).toFloat() * r0, sin(a).toFloat() * 34f, -cos(a).toFloat() * 34f, line)
+        }
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textSize = 11f; txt.textAlign = Paint.Align.CENTER
+        val nr = 27f
+        c.drawText("12", 0f, -nr + 8f, txt); c.drawText("6", 0f, nr, txt)
+        c.drawText("3", nr - 2f, 4f, txt); c.drawText("9", -nr + 2f, 4f, txt)
+        // Hands: hour and minute glide, the second hand sweeps smoothly
+        val sec = (ms % 60_000L) / 1000f
+        val min = (ms % 3_600_000L) / 60_000f
+        val hr = (ms % 43_200_000L) / 3_600_000f
+        fun hand(deg: Float, len: Float, w: Float, col: Int, tail: Float = 0f) {
+            val a = Math.toRadians(deg.toDouble())
+            val dx = sin(a).toFloat(); val dy = -cos(a).toFloat()
+            line.color = INK; line.strokeWidth = w + 3.5f
+            c.drawLine(-dx * tail, -dy * tail, dx * len, dy * len, line)
+            line.color = col; line.strokeWidth = w
+            c.drawLine(-dx * tail, -dy * tail, dx * len, dy * len, line)
+        }
+        hand(hr * 30f, 18f, 4.5f, 0xFF4C3FA8.toInt())
+        hand(min * 6f, 27f, 3.5f, 0xFF38A3F5.toInt())
+        val sa = Math.toRadians((sec * 6f).toDouble())
+        line.color = 0xFFE53950.toInt(); line.strokeWidth = 1.8f
+        c.drawLine(-sin(sa).toFloat() * 8f, cos(sa).toFloat() * 8f, sin(sa).toFloat() * 31f, -cos(sa).toFloat() * 31f, line)
+        line.color = INK
+        circle(c, 0f, 0f, 3.6f, 0xFFE53950.toInt(), depth = 1f)
+        // Glass shine
+        fill.color = 0x40FFFFFF; c.drawOval(-26f, -34f, 22f, -14f, fill)
+    }
+
+    // ═════════ Countdown ("w:countdown") ═════════
+    //
+    // Counts down to StickerElement.until; the title is the sticker's label and the
+    // icon/colour theme is in `look` ("i0".."i3").
+
+    val COUNTDOWN_ICONS = arrayOf("Love", "Party", "Star", "Trip")
+    private val countdownColors = intArrayOf(0xFFFF5C8A.toInt(), 0xFFFF9F43.toInt(), 0xFF8B5CF6.toInt(), 0xFF22B8CF.toInt())
+
+    fun countdownIconOf(look: String) = Regex("i(\\d)").find(look)?.groupValues?.get(1)?.toInt()?.coerceIn(0, 3) ?: 0
+
+    /** The theme icon in a ~44-unit box centred on (0, 0) — also used by the picker. */
+    fun countdownIcon(c: Canvas, icon: Int, timeMs: Long) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        val k = when (icon) { 1 -> 0.6f; 3 -> 0.36f; else -> 0.5f }
+        c.save(); c.scale(k, k)
+        when (icon) { 1 -> party(c, s); 2 -> star(c, s); 3 -> rainbow(c, s); else -> heart(c, s) }
+        c.restore()
+    }
+
+    private fun countdown(c: Canvas, s: Float, st: StickerElement) {
+        val icon = countdownIconOf(st.look)
+        val left = st.until - clockNow()
+        val here = st.until > 0 && left <= 0 && left > -86_400_000L
+        if (here) { c.save(); c.rotate(sin(s * 6f) * 2.5f) }
+        card(c, 184f, 120f, countdownColors[icon])
+        // Icon on the left, bobbing
+        c.save(); c.translate(-58f, 4f + sin(s * 2.2f) * 2f)
+        countdownIcon(c, icon, (s * 1000).toLong()); c.restore()
+        val tx = 22f
+        val title = st.label.trim().ifEmpty { "Countdown" }
+        chunky(c, title, tx, -30f, 14f, 0xFFFFF3B0.toInt(), maxW = 112f)
+        val d = 86_400_000L; val h = 3_600_000L; val m = 60_000L
+        when {
+            st.until <= 0L -> chunky(c, "Set a date", tx, 12f, 20f, maxW = 112f)
+            here -> {
+                chunky(c, "It's here!", tx, 14f, 26f, maxW = 112f)
+                for (i in 0 until 10) {
+                    val ph = (s * 0.6f + i * 0.1f) % 1f
+                    val a = i * 36f * PI.toFloat() / 180f
+                    fill.color = countdownColors[(i + 1) % 4]; fill.alpha = ((1f - ph) * 255).toInt()
+                    c.drawCircle(tx + cos(a) * (20f + ph * 50f), 6f + sin(a) * (12f + ph * 30f), 3f, fill)
+                }
+                fill.alpha = 255
+            }
+            left <= 0L -> {
+                val ago = (-left) / d
+                chunky(c, "$ago", tx, 16f, 40f, maxW = 112f)
+                chunky(c, if (ago == 1L) "day ago" else "days ago", tx, 40f, 13f)
+            }
+            left >= d -> {
+                val days = left / d
+                chunky(c, "$days", tx, 16f, 44f, maxW = 112f)
+                chunky(c, "${if (days == 1L) "day" else "days"} · ${(left % d) / h}h ${(left % h) / m}m", tx, 42f, 13f, maxW = 112f)
+            }
+            else -> {
+                chunky(c, "%02d:%02d:%02d".format(left / h, (left % h) / m, (left % m) / 1000), tx, 12f, 30f, maxW = 112f)
+                chunky(c, "to go", tx, 38f, 13f)
+            }
+        }
+        if (here) c.restore()
+    }
+
+    // ═════════ Shared pet ("w:pet") and its food ("w:food") ═════════
+    //
+    // The pet isn't a card: it roams the canvas (see Pet.pose). Drawn in a 100-unit box with
+    // its feet on y = 44, facing left (tail on the right); mirrored when facing right.
+
+    /** Every sticker on the canvas being drawn, so the pet can find food and hiding spots. */
+    @Volatile var world: List<StickerElement> = emptyList()
+
+    /** Where the pet is drawn right now (sticker-style anchor), for hit testing. */
+    fun petAnchor(st: StickerElement): Pair<Float, Float> {
+        val pose = Pet.pose(st, clockNow(), world)
+        return pose.x to pose.y
+    }
+
+    fun petScale(st: StickerElement) = Pet.stage(st, clockNow()).scale
+
+    private fun drawPet(c: Canvas, st: StickerElement, timeMs: Long, src: LiveSource?, roomId: String?) {
+        val preview = src == null || roomId == "preview"
+        val now = clockNow()
+        drawPetPose(c, st, Pet.pose(st, now, if (preview) emptyList() else world, roam = !preview), timeMs)
+    }
+
+    /** Draws the pet in a given pose (split out so tests can show every state). */
+    internal fun drawPetPose(c: Canvas, st: StickerElement, pose: Pet.Pose, timeMs: Long) {
+        val s = (timeMs % 3_600_000L) / 1000f + (Pet.bornAt(st) % 1000L) / 100f
+        val u = st.size * st.scale / 100f
+        val lk = Pet.look(st.look)
+        c.save()
+        c.translate(pose.x, pose.y - st.size * st.scale * 0.35f); c.scale(u, u)
+        val k = pose.stage.scale
+        // Ground shadow
+        fill.color = 0x33000000
+        val shW = if (pose.action == Pet.Action.DEAD || pose.action == Pet.Action.WEAK || pose.action == Pet.Action.SLEEP || pose.action == Pet.Action.STUFFED) 34f else 24f
+        c.drawOval(-shW * k, 44f - 4f * k, shW * k, 44f + 4f * k, fill)
+        c.save()
+        c.scale(if (pose.facing > 0) -k else k, k, 0f, 44f)
+        petBody(c, s, lk, pose)
+        c.restore()
+        petFx(c, s, lk, pose, k)
+        if (st.label.isNotBlank() && pose.action != Pet.Action.DEAD) {
+            txt.style = Paint.Style.FILL_AND_STROKE; txt.textAlign = Paint.Align.CENTER; txt.textSize = 9f
+            txt.strokeWidth = 3f; txt.color = 0xCCFFFFFF.toInt(); c.drawText(st.label.take(12), 0f, 58f, txt)
+            txt.style = Paint.Style.FILL; txt.color = INK; c.drawText(st.label.take(12), 0f, 58f, txt)
+        }
+        c.restore()
+    }
+
+    private fun petBody(c: Canvas, s: Float, lk: Pet.Look, pose: Pet.Pose) {
+        val a = pose.action
+        val col = Pet.COLORS[lk.color]
+        val old = pose.stage == Pet.Stage.OLD
+        val baby = pose.stage == Pet.Stage.BABY
+        val dark = shade(col, 0.8f)
+        if (a == Pet.Action.DEAD) { petDead(c, s, lk, col, dark); return }
+        val lying = a == Pet.Action.SLEEP || a == Pet.Action.WEAK || a == Pet.Action.STUFFED
+        val petted = a == Pet.Action.PETTED
+        val sad = !petted && a != Pet.Action.EAT && (a == Pet.Action.SULK || a == Pet.Action.WEAK || a == Pet.Action.STUFFED || pose.sad)
+        val walking = pose.moving && (a == Pet.Action.WALK || a == Pet.Action.RUN)
+        val run = a == Pet.Action.RUN
+        val stepRate = when { run -> 22f; old -> 4f; baby -> 6f; else -> 11f }
+        val step = sin(s * stepRate)
+        val hop = when {
+            run -> -abs(step) * 6f
+            walking -> -abs(step) * 2f
+            a == Pet.Action.SULK -> 0f
+            else -> 0f
+        }
+        val breathe = 1f + sin(s * if (lying) 1.3f else 2.2f) * if (a == Pet.Action.WEAK) 0.015f else 0.03f
+        val sway = when { a == Pet.Action.SULK -> sin(s * 0.9f) * 3f; petted -> sin(s * 5f) * 4f; else -> 0f }
+        c.save(); c.translate(0f, hop); c.rotate(sway, 0f, 44f)
+        if (petted) c.scale(1f + sin(s * 10f) * 0.02f, 1f - abs(sin(s * 5f)) * 0.05f, 0f, 44f) // squishes under the hand
+        // Head placement: front is -x
+        val hx = when { a == Pet.Action.EAT -> -14f; a == Pet.Action.SNIFF -> -16f; lying -> -14f; run -> -6f; else -> 0f }
+        val hy = when { a == Pet.Action.EAT -> 16f + abs(sin(s * 8f)) * 2f; a == Pet.Action.SNIFF -> 22f + sin(s * 7f) * 1.5f; lying -> 26f; petted -> 5f; sad -> 6f; baby -> 6f; else -> 2f }
+        val hr = when { lying -> 19f; baby -> 24f; else -> 22f }
+
+        // Tail
+        when (lk.species) {
+            0 -> {
+                aux.reset()
+                if (sad || lying) { aux.moveTo(16f, 40f); aux.quadTo(32f, 46f, 42f, 43f) }
+                else { val sw = sin(s * 2f) * 6f; aux.moveTo(16f, 38f); aux.quadTo(38f, 34f + sw * 0.3f, 34f + sw, 10f) }
+                line.color = INK; line.strokeWidth = 11f; line.style = Paint.Style.STROKE; c.drawPath(aux, line)
+                line.color = col; line.strokeWidth = 6f; c.drawPath(aux, line); line.color = INK
+            }
+            1 -> {
+                val happy = !sad && a != Pet.Action.SLEEP
+                val wag = sin(s * if (happy) (if (run || a == Pet.Action.EAT || petted) 18f else 9f) else 2f) * (if (happy) 7f else 2f)
+                if (sad || lying) limb(c, 16f, 38f, 30f, 42f, 6f, col) else limb(c, 16f, 34f, 30f, 22f + wag, 6f, col)
+            }
+            else -> dot(c, 20f, 38f, 7f, Color.WHITE)
+        }
+        // Back legs (behind the body) when walking
+        if (walking && !lying) {
+            dot(c, 12f + step * 4f, 44f - max(0f, step) * 3f, 4.6f, dark)
+        }
+        // Body
+        c.save(); c.scale(1f, breathe, 0f, 44f)
+        aux.reset()
+        when {
+            lying -> aux.addOval(-28f, 26f, 28f, 46f, Path.Direction.CW)
+            baby -> aux.addOval(-16f, 22f, 16f, 46f, Path.Direction.CW)
+            run -> aux.addOval(-22f, 18f, 22f, 42f, Path.Direction.CW)
+            else -> aux.addOval(-20f, 16f, 20f, 46f, Path.Direction.CW)
+        }
+        toon(c, aux, col, depth = 3f, stroke = 4f, gloss = false)
+        c.restore()
+        // Front paws
+        if (!lying) {
+            if (walking) {
+                dot(c, -10f - step * 5f, 44f - max(0f, -step) * 4f, 5f, dark)
+                dot(c, 6f + step * 5f, 44f - max(0f, step) * 4f, 5f, dark)
+            } else { dot(c, -9f, 44f, 5f, dark); dot(c, 9f, 44f, 5f, dark) }
+        }
+
+        // Ears behind the head
+        if (lk.species == 0) {
+            for (sgn in intArrayOf(-1, 1)) {
+                c.save()
+                if (sad) c.rotate(sgn * 38f, hx + sgn * 10f, hy - hr + 6f)
+                aux.reset(); aux.moveTo(hx + sgn * 17f, hy - 8f); aux.lineTo(hx + sgn * 14f, hy - hr - 9f); aux.lineTo(hx + sgn * 3f, hy - hr + 2f); aux.close()
+                toon(c, aux, col, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false, round = 3f)
+                aux.reset(); aux.moveTo(hx + sgn * 14f, hy - 11f); aux.lineTo(hx + sgn * 13f, hy - hr - 3f); aux.lineTo(hx + sgn * 6f, hy - hr + 3f); aux.close()
+                fill.color = 0xFFFFA8C5.toInt(); c.drawPath(aux, fill)
+                c.restore()
+            }
+        } else if (lk.species == 2) {
+            for (sgn in intArrayOf(-1, 1)) {
+                val droop = if (sad || lying) 50f else if (run) 35f else 8f + sin(s * 1.8f + sgn) * 4f
+                c.save(); c.rotate(sgn * droop + if (run) 20f else 0f, hx + sgn * 8f, hy - hr + 4f)
+                aux.reset(); aux.addOval(hx + sgn * 8f - 6f, hy - hr - 30f, hx + sgn * 8f + 6f, hy - hr + 6f, Path.Direction.CW)
+                toon(c, aux, col, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false)
+                fill.color = 0xFFFFA8C5.toInt(); c.drawOval(hx + sgn * 8f - 2.5f, hy - hr - 24f, hx + sgn * 8f + 2.5f, hy - hr + 1f, fill)
+                c.restore()
+            }
+        }
+        // Head
+        aux.reset(); aux.addCircle(hx, hy, hr, Path.Direction.CW)
+        toon(c, aux, col, depth = 2.5f, stroke = 4f, gloss = true, shadow = false)
+        if (old) { fill.color = 0x40FFFFFF; c.drawOval(hx - 14f, hy - hr + 2f, hx + 14f, hy - hr + 12f, fill) }
+        if (lk.species == 1) {
+            fill.color = if (old) 0xFFE6E6E6.toInt() else shade(col, 1.25f); c.drawOval(hx - 10f, hy + 2f, hx + 10f, hy + 17f, fill)
+            for (sgn in intArrayOf(-1, 1)) {
+                val flap = if (sad || lying) 8f else if (run) -14f else sin(s * 2.5f + sgn) * 6f
+                c.save(); c.rotate(-sgn * (12f + flap), hx + sgn * 17f, hy - 15f)
+                aux.reset(); aux.addOval(hx + sgn * 20f - 7f, hy - 17f, hx + sgn * 20f + 7f, hy + 11f, Path.Direction.CW)
+                toon(c, aux, dark, depth = 1.5f, stroke = 3.5f, gloss = false, shadow = false)
+                c.restore()
+            }
+        }
+        // Eyes
+        val ey = hy + 1f
+        val blink = (s % 4.2f) < 0.12f
+        line.color = INK; line.strokeWidth = 2.6f; line.style = Paint.Style.STROKE
+        when {
+            a == Pet.Action.SLEEP || a == Pet.Action.EAT || petted -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 3f, hx + sgn * 8f + 4f, ey + 3f, 10f, 160f, false, line)
+            a == Pet.Action.STUFFED -> for (sgn in intArrayOf(-1, 1)) { // dizzy swirls
+                c.save(); c.rotate(s * 200f * sgn, hx + sgn * 8f, ey)
+                c.drawArc(hx + sgn * 8f - 4f, ey - 4f, hx + sgn * 8f + 4f, ey + 4f, 0f, 270f, false, line)
+                c.restore()
+            }
+            a == Pet.Action.WEAK -> for (sgn in intArrayOf(-1, 1)) {
+                fill.color = INK; c.drawRect(hx + sgn * 8f - 3.5f, ey, hx + sgn * 8f + 3.5f, ey + 3f, fill)
+                c.drawLine(hx + sgn * 8f - 4f, ey, hx + sgn * 8f + 4f, ey, line)
+            }
+            (a == Pet.Action.IDLE || run) && !sad -> for (sgn in intArrayOf(-1, 1)) c.drawArc(hx + sgn * 8f - 4f, ey - 2f, hx + sgn * 8f + 4f, ey + 5f, 200f, 140f, false, line)
+            blink -> for (sgn in intArrayOf(-1, 1)) c.drawLine(hx + sgn * 8f - 3.5f, ey, hx + sgn * 8f + 3.5f, ey, line)
+            else -> for (sgn in intArrayOf(-1, 1)) {
+                val big = if (baby) 1.25f else 1f
+                fill.color = INK; c.drawOval(hx + sgn * 8f - 3.5f * big, ey - 4.5f * big, hx + sgn * 8f + 3.5f * big, ey + 4.5f * big, fill)
+                fill.color = Color.WHITE; c.drawCircle(hx + sgn * 8f + 1.2f, ey - 1.8f, 1.4f * big, fill)
+                if (sad) { line.strokeWidth = 2f; c.drawLine(hx + sgn * 4f, ey - 9f, hx + sgn * 12f, ey - 10f + (if (sgn < 0) 3f else 3f), line); line.strokeWidth = 2.6f }
+            }
+        }
+        if (old) { // bushy brows
+            line.color = 0xFFF2F2F2.toInt(); line.strokeWidth = 3.5f
+            for (sgn in intArrayOf(-1, 1)) c.drawLine(hx + sgn * 4f, ey - 8f, hx + sgn * 13f, ey - 7f, line)
+            line.color = INK
+        }
+        fill.color = 0x66FF7AA2; c.drawOval(hx - 17f, hy + 6f, hx - 10f, hy + 10f, fill); c.drawOval(hx + 10f, hy + 6f, hx + 17f, hy + 10f, fill)
+        fill.color = if (lk.species == 1) INK else 0xFFFF7AA2.toInt()
+        c.drawOval(hx - 2.6f, hy + 6.5f, hx + 2.6f, hy + 9.5f, fill)
+        line.strokeWidth = 2f
+        when {
+            a == Pet.Action.EAT -> { val o = 1.5f + abs(sin(s * 9f)) * 2f; fill.color = INK; c.drawOval(hx - 2.5f, hy + 11f, hx + 2.5f, hy + 11f + o * 2f, fill) }
+            a == Pet.Action.SNIFF -> for (i in 0..1) { // sniff lines
+                val ph = (s * 2f + i * 0.5f) % 1f
+                line.alpha = ((1f - ph) * 200).toInt(); c.drawArc(hx - 12f - ph * 6f, hy + 4f, hx - 4f - ph * 6f, hy + 14f, 120f, 120f, false, line); line.alpha = 255
+            }
+            sad -> c.drawArc(hx - 4f, hy + 12f, hx + 4f, hy + 17f, 200f, 140f, false, line)
+            a == Pet.Action.STUFFED -> { // cheeks puffed, wobbly mouth
+                fill.color = 0x5594D82D; c.drawCircle(hx, hy + 6f, hr * 0.7f, fill)
+                aux.reset(); aux.moveTo(hx - 5f, hy + 14f); aux.quadTo(hx - 2.5f, hy + 11f, hx, hy + 14f); aux.quadTo(hx + 2.5f, hy + 17f, hx + 5f, hy + 14f)
+                c.drawPath(aux, line)
+            }
+            lk.species == 1 && (run || petted || a == Pet.Action.IDLE) -> {
+                c.drawArc(hx - 6f, hy + 6f, hx + 6f, hy + 15f, 20f, 140f, false, line)
+                fill.color = 0xFFFF7AA2.toInt(); c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, fill)
+                line.strokeWidth = 1.5f; c.drawRoundRect(hx - 2.8f, hy + 13f, hx + 2.8f, hy + 20f + sin(s * 6f), 3f, 3f, line)
+            }
+            else -> {
+                c.drawArc(hx - 4.5f, hy + 8f, hx, hy + 12.5f, 20f, 140f, false, line)
+                c.drawArc(hx, hy + 8f, hx + 4.5f, hy + 12.5f, 20f, 140f, false, line)
+            }
+        }
+        if (lk.species == 0) {
+            line.strokeWidth = 1.3f
+            for (sgn in intArrayOf(-1, 1)) for (k in -1..1) c.drawLine(hx + sgn * 11f, hy + 9f + k * 2.5f, hx + sgn * 22f, hy + 8f + k * 4.5f, line)
+        }
+        if (old) { // beard
+            aux.reset(); aux.moveTo(hx - 8f, hy + 14f); aux.quadTo(hx - 6f, hy + 30f, hx, hy + 32f + sin(s * 1.5f)); aux.quadTo(hx + 6f, hy + 30f, hx + 8f, hy + 14f); aux.close()
+            toon(c, aux, 0xFFF5F5F5.toInt(), depth = 1f, stroke = 2.5f, gloss = false, shadow = false)
+        }
+        if (baby) { // tuft
+            aux.reset(); aux.moveTo(hx - 3f, hy - hr + 2f); aux.quadTo(hx, hy - hr - 9f, hx + 5f, hy - hr - 5f)
+            line.color = INK; line.strokeWidth = 5f; c.drawPath(aux, line); line.color = col; line.strokeWidth = 2.5f; c.drawPath(aux, line); line.color = INK
+        }
+        line.strokeWidth = 3f
+        c.restore()
+    }
+
+    /** Lying on its back, paws up, X eyes. */
+    private fun petDead(c: Canvas, s: Float, lk: Pet.Look, col: Int, dark: Int) {
+        for (x in floatArrayOf(-14f, -5f, 6f, 15f)) limb(c, x, 32f, x + 1f, 18f, 5f, dark)
+        aux.reset(); aux.addOval(-26f, 26f, 26f, 46f, Path.Direction.CW)
+        toon(c, aux, shade(col, 0.9f), depth = 2f, stroke = 4f, gloss = false, shadow = false)
+        val hx = -26f; val hy = 32f
+        if (lk.species == 2) for (sgn in intArrayOf(-1, 1)) {
+            aux.reset(); aux.addOval(hx - 40f, hy + sgn * 6f - 5f, hx - 10f, hy + sgn * 6f + 5f, Path.Direction.CW)
+            toon(c, aux, col, depth = 1f, stroke = 3f, gloss = false, shadow = false)
+        }
+        aux.reset(); aux.addCircle(hx, hy, 17f, Path.Direction.CW)
+        toon(c, aux, shade(col, 0.9f), depth = 2f, stroke = 4f, gloss = false, shadow = false)
+        line.color = INK; line.strokeWidth = 2.4f
+        for (dy in floatArrayOf(-6f, 6f)) {
+            c.drawLine(hx - 5f, hy + dy - 3f, hx + 1f, hy + dy + 3f, line); c.drawLine(hx - 5f, hy + dy + 3f, hx + 1f, hy + dy - 3f, line)
+        }
+        fill.color = 0xFFFF7AA2.toInt(); c.drawRoundRect(hx - 15f, hy - 2f, hx - 8f, hy + 2.5f, 2f, 2f, fill)
+    }
+
+    private fun petFx(c: Canvas, s: Float, lk: Pet.Look, pose: Pet.Pose, k: Float) {
+        val top = 44f - 70f * k
+        fun bubble(text: String, alpha: Int = 255) {
+            c.save(); c.translate(28f * k, top - 4f + sin(s * 2f) * 2f)
+            txt.textSize = 9f
+            val bw = max(24f, txt.measureText(text) / 2f + 8f)
+            shape.reset(); shape.addRoundRect(-bw, -11f, bw, 11f, 11f, 11f, Path.Direction.CW)
+            shape.moveTo(-12f, 9f); shape.lineTo(-20f, 19f); shape.lineTo(-4f, 10f); shape.close()
+            fill.alpha = alpha; toon(c, shape, Color.WHITE, depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+            txt.style = Paint.Style.FILL; txt.color = INK; txt.alpha = alpha; txt.textAlign = Paint.Align.CENTER; txt.textSize = 9f
+            c.drawText(text, 0f, 3.2f, txt); txt.alpha = 255
+            c.restore()
+        }
+        when (pose.action) {
+            Pet.Action.EAT -> for (i in 0..2) {
+                val ph = (s * 0.5f + i / 3f) % 1f
+                c.save(); c.translate(-14f + i * 14f + sin(s * 2f + i) * 4f, top + 10f - ph * 30f)
+                heartPath(shape, 5f)
+                fill.color = 0xFFFF5C8A.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawPath(shape, fill); fill.alpha = 255
+                c.restore()
+            }
+            Pet.Action.PETTED -> {
+                for (i in 0..4) { // a fountain of hearts
+                    val ph = (s * 0.7f + i / 5f) % 1f
+                    val side = if (i % 2 == 0) -1f else 1f
+                    c.save(); c.translate(side * (16f + ph * 18f) * k + sin(s * 3f + i) * 3f, top + 14f * k - ph * 34f)
+                    heartPath(shape, 4f + (i % 3) * 1.5f)
+                    fill.color = if (i % 3 == 1) 0xFFFF9EC0.toInt() else 0xFFFF5C8A.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawPath(shape, fill); fill.alpha = 255
+                    c.restore()
+                }
+                // the hand rubbing its head
+                c.save(); c.translate(sin(s * 5f) * 7f * k, 44f - 66f * k + abs(sin(s * 5f)) * 2f); c.scale(k * 0.9f, k * 0.9f)
+                hand(c)
+                c.restore()
+            }
+            Pet.Action.IDLE -> if (pose.full < 0.6f && (s % 12f) < 4f) bubble("snack?")
+            Pet.Action.SLEEP -> for (i in 0..2) {
+                val ph = (s * 0.4f + i / 3f) % 1f
+                chunky(c, "z", 6f + ph * 22f, 20f - ph * 34f, 9f + ph * 6f, alpha = ((1f - ph) * 255).toInt())
+            }
+            Pet.Action.SNIFF, Pet.Action.WALK -> if (pose.hungry && (s % 6f) < 3f) bubble(if (pose.action == Pet.Action.SNIFF) "sniff sniff" else "food?")
+            Pet.Action.RUN -> for (i in 0..2) { // dust puffs behind
+                val ph = (s * 3f + i / 3f) % 1f
+                fill.color = 0x55FFFFFF; fill.alpha = ((1f - ph) * 140).toInt()
+                c.drawCircle(-pose.facing * (22f + ph * 22f) * k, 42f - ph * 8f, (3f + ph * 5f) * k, fill); fill.alpha = 255
+            }
+            Pet.Action.SULK -> {
+                for (i in 0..1) { // sigh puffs
+                    val ph = (s * 0.5f + i * 0.5f) % 1f
+                    fill.color = 0xCCFFFFFF.toInt(); fill.alpha = ((1f - ph) * 200).toInt()
+                    c.drawCircle(-pose.facing * -(-18f - ph * 14f) * k, top + 20f - ph * 14f, (2.5f + ph * 3f) * k, fill); fill.alpha = 255
+                }
+                if ((s % 8f) < 4f) bubble(when { pose.refusing -> "not hungry..."; pose.sad -> "pet me?"; else -> "..." })
+                if (pose.joy < 0.15f || pose.full < 0.1f) { val ph = (s * 0.8f) % 1f; fill.color = 0xFF7CC6FF.toInt(); fill.alpha = ((1f - ph) * 255).toInt(); c.drawCircle(-6f * k, top + 40f * k + ph * 12f, 2.2f, fill); fill.alpha = 255 }
+            }
+            Pet.Action.STUFFED -> if ((s % 7f) < 4f) bubble("too full...", 220)
+            Pet.Action.WEAK -> {
+                bubble(if (pose.hungry) "so hungry..." else if (pose.sad) "so lonely..." else "feeling sick...", 200)
+                fill.color = 0xFF7CC6FF.toInt(); c.drawCircle(-30f * k, 22f, 2.4f, fill)
+            }
+            Pet.Action.DEAD -> { // little spirit drifting up, with a halo
+                val ph = (s * 0.15f) % 1f
+                c.save(); c.translate(sin(s) * 6f, 10f - ph * 50f); c.scale(0.32f, 0.32f)
+                fill.alpha = ((1f - ph) * 255).toInt()
+                ghost(c, s)
+                line.color = 0xFFFFD43B.toInt(); line.strokeWidth = 5f; c.drawOval(-18f, -58f, 18f, -48f, line); line.color = INK
+                fill.alpha = 255
+                c.restore()
+            }
+        }
+    }
+
+    /** A bowl of food; empties as the pet eats it. */
+    private fun foodBowl(c: Canvas, s: Float, st: StickerElement, src: LiveSource?, roomId: String?) {
+        val preview = src == null || roomId == "preview"
+        val left0 = if (preview) 1f else Pet.foodLeft(st, world, clockNow())
+        if (left0 <= -1f) return // licked clean and put away
+        val left = left0.coerceAtLeast(0f)
+        if (left0 < 0f) { val k = 1f + left0; c.scale(k, k, 0f, 10f) } // shrinks away
+        fill.color = 0x33000000; c.drawOval(-24f, 10f, 24f, 18f, fill)
+        val n = (left * 9).roundToInt()
+        for (i in 0 until n) {
+            val kx = -12f + (i % 5) * 6f + (i / 5) * 3f
+            val ky = -12f - (i / 5) * 5f + if (left in 0.01f..0.99f) sin(s * 9f + i) * 1.2f else 0f
+            dot(c, kx, ky, 3.6f, if (i % 3 == 0) 0xFFC97A3A.toInt() else 0xFFB5651D.toInt())
+        }
+        if (n == 0) { dot(c, -4f, -6f, 1.6f, 0xFFB5651D.toInt()); dot(c, 6f, -5f, 1.4f, 0xFFB5651D.toInt()) }
+        aux.reset(); aux.moveTo(-20f, -8f); aux.lineTo(20f, -8f); aux.lineTo(14f, 10f); aux.lineTo(-14f, 10f); aux.close()
+        toon(c, aux, 0xFFFF6B6B.toInt(), depth = 3f, stroke = 3.5f, round = 4f, shadow = false)
+        // bone on the bowl
+        fill.color = Color.WHITE; c.drawRoundRect(-6f, -1f, 6f, 3f, 2f, 2f, fill)
+        for (x in floatArrayOf(-7f, 7f)) for (y in floatArrayOf(-1f, 3f)) c.drawCircle(x, y, 2.2f, fill)
+    }
+
+    /** The cartoon pit the bin turns into when you drag a dead pet. Centred on (0, 0), ~100 units wide. */
+    fun pit(c: Canvas, timeMs: Long, open: Boolean) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        // dirt mound
+        aux.reset(); aux.moveTo(12f, 14f); aux.cubicTo(18f, -40f, 62f, -42f, 72f, 14f); aux.close()
+        toon(c, aux, 0xFF9A6332.toInt(), depth = 3f, stroke = 3.5f, gloss = true, shadow = false)
+        for ((x, y) in listOf(52f to -6f, 60f to 4f, 46f to -18f)) dot(c, x, y, 2.4f, 0xFF7A4A22.toInt())
+        // shovel stuck in it
+        c.save(); c.rotate(14f + if (open) sin(s * 6f) * 5f else 0f, 40f, -8f)
+        limb(c, 40f, -8f, 40f, -52f, 4f, 0xFFC08A4D.toInt())
+        limb(c, 34f, -52f, 46f, -52f, 4f, 0xFFC08A4D.toInt())
+        aux.reset(); aux.moveTo(32f, -10f); aux.lineTo(48f, -10f); aux.lineTo(46f, 8f); aux.quadTo(40f, 14f, 34f, 8f); aux.close()
+        toon(c, aux, 0xFFB8C4D0.toInt(), depth = 1.5f, stroke = 2.5f, gloss = true, shadow = false)
+        c.restore()
+        // the hole
+        val g = if (open) 1.12f else 1f
+        aux.reset(); aux.addOval(-40f * g, -12f * g, 30f * g, 16f * g, Path.Direction.CW)
+        toon(c, aux, 0xFF7A4A22.toInt(), depth = 5f, stroke = 4f, gloss = false, shadow = false)
+        fill.shader = RadialGradient(-5f, 4f, 30f * g, 0xFF120804.toInt(), 0xFF3B220F.toInt(), Shader.TileMode.CLAMP)
+        c.drawOval(-34f * g, -7f * g, 24f * g, 12f * g, fill); fill.shader = null
+        line.color = INK; line.strokeWidth = 2.5f; c.drawOval(-34f * g, -7f * g, 24f * g, 12f * g, line)
+        // clods
+        for ((x, y) in listOf(-44f to 12f, -30f to 18f, 12f to 18f)) dot(c, x, y, 3.5f, 0xFF8B5A2B.toInt())
+    }
+
+    /** The pet alone in a ~90-unit box, for the species picker. */
+    fun petPreview(c: Canvas, look: String, timeMs: Long, stage: Pet.Stage = Pet.Stage.ADULT) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        petBody(c, s, Pet.look(look), Pet.Pose(0f, 0f, -1f, Pet.Action.IDLE, stage))
+    }
+
+    /** A cartoon hand seen from above, fingers pointing down; palm centred on (0, 0), ~40 units. */
+    fun hand(c: Canvas) {
+        val skin = 0xFFFFCFA8.toInt()
+        // sleeve
+        aux.reset(); aux.addRoundRect(-11f, -34f, 11f, -12f, 5f, 5f, Path.Direction.CW)
+        toon(c, aux, 0xFF5C9DFF.toInt(), depth = 2f, stroke = 3f, gloss = true, shadow = false)
+        // fingers
+        for ((i, x) in floatArrayOf(-9f, -3f, 3f, 9f).withIndex()) {
+            val len = if (i == 0 || i == 3) 9f else 12f
+            aux.reset(); aux.addRoundRect(x - 3.4f, -2f, x + 3.4f, 4f + len, 3.4f, 3.4f, Path.Direction.CW)
+            toon(c, aux, skin, depth = 1.5f, stroke = 2.6f, gloss = false, shadow = false)
+        }
+        // thumb
+        aux.reset(); aux.addRoundRect(-19f, -8f, -11f, -1f, 4f, 4f, Path.Direction.CW)
+        toon(c, aux, skin, depth = 1.5f, stroke = 2.6f, gloss = false, shadow = false)
+        // palm
+        aux.reset(); aux.addRoundRect(-13f, -16f, 13f, 4f, 9f, 9f, Path.Direction.CW)
+        toon(c, aux, skin, depth = 2f, stroke = 3f, gloss = true, shadow = false)
+        fill.color = 0x40FF7AA2; c.drawOval(-9f, -6f, -3f, -2f, fill)
+    }
+
+    /** The food bowl alone (for the drag-out tool). Centred on (0, 0), ~50 units wide. */
+    fun bowlIcon(c: Canvas, timeMs: Long) {
+        val s = (timeMs % 3_600_000L) / 1000f
+        c.save(); c.translate(0f, 2f)
+        foodBowl(c, s, StickerElement(kind = "w:food"), null, null)
+        c.restore()
+    }
+
+    /**
+     * The pet's thought cloud: name and age, then its food, health and happiness bars.
+     * Drawn above its head in canvas space; [unit] is the size of one cloud unit, [appear] 0..1.
+     */
+    fun petThought(c: Canvas, st: StickerElement, timeMs: Long, unit: Float, appear: Float) {
+        if (appear <= 0.01f) return
+        val now = clockNow()
+        val s = (timeMs % 3_600_000L) / 1000f
+        val life = Pet.life(st, world, now)
+        val v = life.now
+        val pose = Pet.pose(st, now, world)
+        val u = st.size * st.scale / 100f
+        val k = pose.stage.scale
+        val headTop = pose.y - st.size * st.scale * 0.35f + (44f - 70f * k - 20f) * u // above its speech bubble
+        val w = 160f; val h = if (v.dead) 70f else 104f
+        c.save()
+        c.translate(pose.x, headTop)
+        c.scale(unit, unit)
+        val pop = appear * (1f + 0.12f * sin(appear * Math.PI.toFloat()))
+        c.scale(pop, pop, 0f, 0f)
+        val bob = sin(s * 1.6f) * 1.5f
+        // trail of little puffs from its head
+        for ((i, r) in floatArrayOf(4f, 6f, 8.5f).withIndex()) {
+            aux.reset(); aux.addCircle(8f + i * 7f, -6f - i * 12f + bob * 0.5f, r, Path.Direction.CW)
+            toon(c, aux, Color.WHITE, depth = 1.5f, stroke = 2.5f, gloss = false, shadow = false)
+        }
+        // the cloud
+        val cx = 20f; val bottom = -40f + bob
+        val top = bottom - h
+        shape.reset(); shape.addRoundRect(cx - w / 2, top, cx + w / 2, bottom, 30f, 30f, Path.Direction.CW)
+        val bump = Path()
+        val n = 6
+        for (i in 0..n) {
+            val x = cx - w / 2 + 14f + i * (w - 28f) / n
+            bump.addCircle(x, top + 4f, 15f, Path.Direction.CW); bump.addCircle(x, bottom - 4f, 13f, Path.Direction.CW)
+        }
+        bump.addCircle(cx - w / 2 + 4f, (top + bottom) / 2, 18f, Path.Direction.CW)
+        bump.addCircle(cx + w / 2 - 4f, (top + bottom) / 2, 18f, Path.Direction.CW)
+        shape.op(bump, Path.Op.UNION)
+        toon(c, shape, Color.WHITE, depth = 3f, stroke = 3.5f, gloss = true, shadow = false)
+
+        val name = st.label.ifBlank { "Your pet" }
+        val age = Pet.ageDays(st, now)
+        val face0 = txt.typeface
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textAlign = Paint.Align.CENTER; txt.textSize = 15f
+        c.drawText(name.take(12), cx, top + 18f, txt)
+        txt.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); txt.textSize = 10.5f; txt.color = 0xFF6B6B7A.toInt()
+        if (v.dead) {
+            val lived = Pet.ageDays(st, v.deadAt)
+            c.drawText("lived $lived ${if (lived == 1) "day" else "days"} · gone to pet heaven", cx, top + 36f, txt)
+            txt.color = INK; txt.textSize = 11f
+            c.drawText("drag me to the bin to bury me", cx, top + 54f, txt)
+        } else {
+            val stage = when (pose.stage) { Pet.Stage.BABY -> "baby"; Pet.Stage.YOUNG -> "young"; Pet.Stage.ADULT -> "grown up"; Pet.Stage.OLD -> "old timer" }
+            c.drawText("$stage · day ${age + 1}", cx, top + 32f, txt)
+            val rows = listOf(
+                Triple("Food", v.full, 0xFFFFA94D.toInt()),
+                Triple("Health", v.hp, if (v.hp < Pet.WEAK) 0xFFFF6B6B.toInt() else 0xFF51CF66.toInt()),
+                Triple("Happy", v.joy, 0xFFFFD43B.toInt()),
+            )
+            for ((i, r) in rows.withIndex()) {
+                val (label, value, col) = r
+                val y = top + 50f + i * 19f
+                val x0 = cx - w / 2 + 12f
+                // icon
+                when (i) {
+                    0 -> { dot(c, x0 + 6f, y, 5f, 0xFFB5651D.toInt()); dot(c, x0 + 3f, y - 3f, 2.2f, 0xFFC97A3A.toInt()) }
+                    1 -> { c.save(); c.translate(x0 + 6f, y); heartPath(shape, 5.5f); fill.color = 0xFFFF5C8A.toInt(); c.drawPath(shape, fill); c.restore() }
+                    else -> {
+                        dot(c, x0 + 6f, y, 6f, 0xFFFFD43B.toInt())
+                        line.color = INK; line.strokeWidth = 1.4f; line.style = Paint.Style.STROKE
+                        if (value < Pet.SAD) c.drawArc(x0 + 3f, y + 1.5f, x0 + 9f, y + 5f, 200f, 140f, false, line)
+                        else c.drawArc(x0 + 3f, y - 1f, x0 + 9f, y + 3.5f, 20f, 140f, false, line)
+                        fill.color = INK; c.drawCircle(x0 + 4f, y - 2f, 0.9f, fill); c.drawCircle(x0 + 8f, y - 2f, 0.9f, fill)
+                    }
+                }
+                txt.textAlign = Paint.Align.LEFT; txt.textSize = 10f; txt.color = INK
+                c.drawText(label, x0 + 15f, y + 3.5f, txt)
+                val bx = x0 + 52f; val bw = w - 52f - 30f
+                fill.color = 0x1A1A1A2E; c.drawRoundRect(bx, y - 4.5f, bx + bw, y + 4.5f, 4.5f, 4.5f, fill)
+                val fillW = bw * value.coerceIn(0f, 1f)
+                if (fillW > 1f) {
+                    val low = value < 0.25f && (s % 1f) < 0.5f
+                    fill.color = if (low) shade(col, 1.2f) else col
+                    c.drawRoundRect(bx, y - 4.5f, bx + maxOf(fillW, 9f), y + 4.5f, 4.5f, 4.5f, fill)
+                    fill.color = 0x55FFFFFF; c.drawRoundRect(bx + 2f, y - 3.5f, bx + maxOf(fillW, 9f) - 2f, y - 1f, 2f, 2f, fill)
+                }
+                line.color = INK; line.strokeWidth = 1.6f; line.style = Paint.Style.STROKE
+                c.drawRoundRect(bx, y - 4.5f, bx + bw, y + 4.5f, 4.5f, 4.5f, line)
+            }
+            txt.textAlign = Paint.Align.CENTER
+        }
+        txt.typeface = face0
+        c.restore()
+    }
+
+    // ═════════ Status avatar ("w:me") ═════════
+    //
+    // A little cartoon person acting out what the sticker's owner is doing right now.
+    // Card is 190 × 150 units; the floor line sits at y = 44 (48 on the road).
+
+    private const val PANTS = 0xFF3D4B7C.toInt()
+    private const val SHOE = 0xFF2A2238.toInt()
+    private const val WOOD = 0xFFB07A4A.toInt()
+    private const val HEAD_R = 15f
+    private val p1 = Path()
+    private val p2 = Path()
+    private val p3 = Path()
+
+    private enum class Eyes { OPEN, CLOSED, HAPPY, SAD }
+    private enum class Arms { PHONE, KNEES, MUG }
+
+    private fun wrap(v: Float, m: Float) = ((v % m) + m) % m
+
+    private fun ago(ms: Long): String {
+        val m = (ms / 60_000L).toInt()
+        return when {
+            m < 1 -> "now"
+            m < 60 -> "${m}m"
+            else -> if (m % 60 == 0 || m >= 600) "${m / 60}h" else "${m / 60}h ${m % 60}m"
+        }
+    }
+
+    private fun caption(status: String) = when (status) {
+        Status.PHONE -> "on the phone"
+        Status.RIDE -> "riding"
+        Status.CYCLE -> "cycling"
+        Status.WALK -> "walking"
+        Status.MUSIC -> "vibing"
+        Status.CHARGE -> "phone charging"
+        Status.SLEEP -> "sleeping"
+        Status.AWAY -> "chilling"
+        Status.GHOST -> "on a break"
+        NUDGE -> "nudged you!"
+        else -> "no status yet"
+    }
+
+    private fun me(c: Canvas, s: Float, st: StickerElement, src: LiveSource?) {
+        val stats = src?.stats(st.owner)
+        val lk = AvatarLook.decode(st.look)
+        val dark = lk.dark == 1
+        val now = System.currentTimeMillis()
+        val nudged = src != null && st.owner.isNotEmpty() && now - src.nudgedAt(st.owner) < 60_000L
+        val status = if (nudged) NUDGE else Status.effective(stats, now)
+        val w = 190f; val h = 150f
+        shape.reset(); shape.addRoundRect(-w / 2, -h / 2, w / 2, h / 2, 34f, 34f, Path.Direction.CW)
+        toon(c, shape, if (dark) 0xFF2E2A63.toInt() else 0xFFBFE6FF.toInt(), depth = 8f, stroke = 5f, gloss = false)
+        c.save(); c.clipPath(shape)
+        when (status) {
+            Status.PHONE -> scenePhone(c, s, lk, dark)
+            Status.RIDE -> sceneRide(c, s, lk, dark)
+            Status.CYCLE -> sceneCycle(c, s, lk, dark)
+            Status.WALK -> sceneWalk(c, s, lk, dark)
+            Status.MUSIC -> sceneMusic(c, s, lk, dark)
+            Status.CHARGE -> sceneCharge(c, s, lk, dark)
+            Status.SLEEP -> sceneSleep(c, s, lk)
+            Status.AWAY -> sceneAway(c, s, lk, dark)
+            Status.GHOST -> sceneGhost(c, s, lk, dark)
+            NUDGE -> sceneNudge(c, s, lk, dark)
+            else -> sceneHello(c, s, lk, dark)
+        }
+        // caption on the floor
+        val cap = caption(status)
+        val text = if (status.isEmpty() || status == NUDGE || stats == null || stats.statusAt <= 0L) cap else "$cap · ${ago(now - stats.statusAt)}"
+        chunky(c, text, 0f, 66f, 14f, maxW = 170f)
+        c.restore()
+        line.strokeWidth = 5f; line.color = INK; line.pathEffect = null
+        c.drawRoundRect(-w / 2, -h / 2, w / 2, h / 2, 34f, 34f, line)
+        if (stats != null && stats.battery >= 0 && status.isNotEmpty() && status != Status.GHOST) batteryChip(c, -84f, -56f, stats.battery, stats.charging, s)
+        plate(c, st.label, -75f)
+    }
+
+    // ── Body parts ──
+
+    private fun limb(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, w: Float, color: Int) {
+        line.color = INK; line.strokeWidth = w + 5f; c.drawLine(x1, y1, x2, y2, line)
+        line.color = color; line.strokeWidth = w; c.drawLine(x1, y1, x2, y2, line)
+        line.color = INK
+    }
+
+    private fun limb3(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, x3: Float, y3: Float, w: Float, color: Int) {
+        line.color = INK; line.strokeWidth = w + 5f; c.drawLine(x1, y1, x2, y2, line); c.drawLine(x2, y2, x3, y3, line)
+        line.color = color; line.strokeWidth = w; c.drawLine(x1, y1, x2, y2, line); c.drawLine(x2, y2, x3, y3, line)
+        line.color = INK
+    }
+
+    private fun dot(c: Canvas, x: Float, y: Float, r: Float, color: Int) {
+        fill.color = color; c.drawCircle(x, y, r, fill)
+        line.color = INK; line.strokeWidth = 2.5f; c.drawCircle(x, y, r, line)
+    }
+
+    private fun shoe(c: Canvas, x: Float, y: Float) {
+        fill.color = SHOE; c.drawOval(x - 5f, y - 3.5f, x + 7f, y + 3.5f, fill)
+        line.color = INK; line.strokeWidth = 2.5f; c.drawOval(x - 5f, y - 3.5f, x + 7f, y + 3.5f, line)
+    }
+
+    private fun head(
+        c: Canvas, x: Float, y: Float, lk: AvatarLook, s: Float, eyes: Eyes = Eyes.OPEN,
+        lookX: Float = 1.5f, tilt: Float = 0f, helmet: Boolean = false, phones: Boolean = false,
+    ) {
+        val r = HEAD_R
+        c.save(); c.translate(x, y); c.rotate(tilt)
+        val hc = AvatarLook.HAIR_COLORS[lk.hairColor]
+        if (!helmet) backHair(c, lk, hc, s)
+        shape.reset(); shape.addCircle(0f, 0f, r, Path.Direction.CW)
+        toon(c, shape, AvatarLook.SKINS[lk.skin], depth = 2.5f, stroke = 3.5f, gloss = false, shadow = false)
+        val e = if (eyes == Eyes.OPEN && s % 4.3f < 0.13f) Eyes.CLOSED else eyes
+        val ex = lookX; val ey = 1.5f
+        line.color = INK
+        when (e) {
+            Eyes.OPEN, Eyes.SAD -> {
+                fill.color = INK
+                c.drawOval(-7.2f + ex, ey - 3f, -3.8f + ex, ey + 2.6f, fill); c.drawOval(3.8f + ex, ey - 3f, 7.2f + ex, ey + 2.6f, fill)
+                fill.color = Color.WHITE
+                c.drawCircle(-4.8f + ex, ey - 1.6f, 1f, fill); c.drawCircle(6.2f + ex, ey - 1.6f, 1f, fill)
+                if (lk.gender == 1) {
+                    line.strokeWidth = 1.6f
+                    c.drawLine(-7f + ex, ey - 2.2f, -9.4f + ex, ey - 4.2f, line); c.drawLine(7f + ex, ey - 2.2f, 9.4f + ex, ey - 4.2f, line)
+                }
+                if (e == Eyes.SAD) {
+                    line.strokeWidth = 2f
+                    c.drawLine(-8.5f + ex, ey - 5f, -3.5f + ex, ey - 7.5f, line); c.drawLine(3.5f + ex, ey - 7.5f, 8.5f + ex, ey - 5f, line)
+                }
+            }
+            Eyes.CLOSED -> {
+                line.strokeWidth = 2.2f
+                c.drawArc(-7.5f + ex, ey - 3f, -3.5f + ex, ey + 1.5f, 0f, 180f, false, line)
+                c.drawArc(3.5f + ex, ey - 3f, 7.5f + ex, ey + 1.5f, 0f, 180f, false, line)
+            }
+            Eyes.HAPPY -> {
+                line.strokeWidth = 2.2f
+                c.drawArc(-7.5f + ex, ey - 2f, -3.5f + ex, ey + 2.5f, 180f, 180f, false, line)
+                c.drawArc(3.5f + ex, ey - 2f, 7.5f + ex, ey + 2.5f, 180f, 180f, false, line)
+            }
+        }
+        fill.color = 0x55FF6B9A
+        c.drawOval(-11.5f + ex * 0.5f, 5f, -6.5f + ex * 0.5f, 8.5f, fill); c.drawOval(6.5f + ex * 0.5f, 5f, 11.5f + ex * 0.5f, 8.5f, fill)
+        line.strokeWidth = 2.2f; line.color = INK
+        when (eyes) {
+            Eyes.SAD -> c.drawArc(-3.5f + ex, 8.5f, 3.5f + ex, 13f, 200f, 140f, false, line)
+            Eyes.CLOSED -> { fill.color = INK; c.drawOval(-1.5f + ex, 7.5f, 1.5f + ex, 10.5f, fill) }
+            Eyes.HAPPY -> {
+                aux.reset(); aux.arcTo(-4f + ex, 3.5f, 4f + ex, 11.5f, 0f, 180f, true); aux.close()
+                fill.color = 0xFFB4324F.toInt(); c.drawPath(aux, fill); c.drawPath(aux, line)
+            }
+            else -> c.drawArc(-4f + ex, 4f, 4f + ex, 10f, 20f, 140f, false, line)
+        }
+        if (helmet) helmet(c, lk) else frontHair(c, lk, hc)
+        if (phones) headphones(c)
+        c.restore()
+    }
+
+    private fun backHair(c: Canvas, lk: AvatarLook, hc: Int, s: Float) {
+        if (lk.gender == 0) return
+        val r = HEAD_R
+        p1.reset()
+        when (lk.hair) {
+            0 -> p1.addRoundRect(-r - 3.5f, -r * 0.7f, r + 3.5f, r * 1.55f, 9f, 9f, Path.Direction.CW)
+            1 -> {
+                c.save(); c.rotate(sin(s * 3f) * 8f, -r + 2f, -4f)
+                p1.addOval(-r - 10f, -7f, -r + 3f, 17f, Path.Direction.CW)
+                toon(c, p1, hc, depth = 2f, stroke = 3.5f, gloss = false, shadow = false)
+                dot(c, -r + 1f, -4f, 2.6f, 0xFFFF5C7A.toInt())
+                c.restore(); return
+            }
+            2 -> p1.addCircle(0f, -r - 4f, 7.5f, Path.Direction.CW)
+            else -> p1.addRoundRect(-r - 3.5f, -r * 0.6f, r + 3.5f, r * 0.85f, 8f, 8f, Path.Direction.CW)
+        }
+        toon(c, p1, hc, depth = 2f, stroke = 3.5f, gloss = false, shadow = false)
+    }
+
+    private fun frontHair(c: Canvas, lk: AvatarLook, hc: Int) {
+        val r = HEAD_R
+        p1.reset(); p1.addCircle(0f, -1.5f, r + 2.2f, Path.Direction.CW)
+        p2.reset(); p2.addRect(-40f, -40f, 40f, -r * 0.45f, Path.Direction.CW)
+        p1.op(p2, Path.Op.INTERSECT)
+        val boy = lk.gender == 0
+        when {
+            boy && lk.hair == 1 -> for (deg in floatArrayOf(-150f, -118f, -86f, -54f)) {
+                val a = Math.toRadians(deg.toDouble()); val a1 = Math.toRadians(deg - 15.0); val a2 = Math.toRadians(deg + 15.0)
+                p2.reset()
+                p2.moveTo((cos(a1) * (r + 1)).toFloat(), (sin(a1) * (r + 1)).toFloat() - 1.5f)
+                p2.lineTo((cos(a) * (r + 9)).toFloat(), (sin(a) * (r + 9)).toFloat() - 1.5f)
+                p2.lineTo((cos(a2) * (r + 1)).toFloat(), (sin(a2) * (r + 1)).toFloat() - 1.5f)
+                p2.close(); p1.op(p2, Path.Op.UNION)
+            }
+            boy && lk.hair == 2 -> for (i in 0..6) {
+                val a = Math.toRadians(190.0 + i * 26.7)
+                p2.reset(); p2.addCircle((cos(a) * r).toFloat(), (sin(a) * r).toFloat() - 1f, 5.5f, Path.Direction.CW)
+                p1.op(p2, Path.Op.UNION)
+            }
+            (boy && lk.hair == 3) || (!boy && lk.hair != 2) -> {
+                p2.reset()
+                p2.moveTo(-r - 1.5f, -r * 0.3f)
+                p2.quadTo(-r * 0.2f, -r * 0.38f, r * 0.75f, -r * 0.68f)
+                p2.lineTo(r * 0.3f, -r - 2f); p2.lineTo(-r, -r * 0.6f); p2.close()
+                p1.op(p2, Path.Op.UNION)
+            }
+        }
+        toon(c, p1, hc, depth = 1.2f, stroke = 3f, gloss = true, shadow = false)
+    }
+
+    private fun helmet(c: Canvas, lk: AvatarLook) {
+        val r = HEAD_R
+        p1.reset(); p1.addCircle(-1f, -2f, r + 4.5f, Path.Direction.CW)
+        p2.reset(); p2.addRect(-40f, -40f, 40f, r * 0.6f, Path.Direction.CW)
+        p1.op(p2, Path.Op.INTERSECT)
+        toon(c, p1, AvatarLook.OUTFITS[lk.outfit], depth = 2.5f, stroke = 3.5f, shadow = false)
+        line.color = Color.WHITE; line.strokeWidth = 2.5f
+        c.drawArc(-r - 2f, -r - 5f, r, r + 1f, 205f, 80f, false, line)
+        p3.reset(); p3.addRoundRect(-3f, -7f, r + 4.5f, 5f, 6f, 6f, Path.Direction.CW)
+        fill.color = 0xFF1E2A44.toInt(); c.drawPath(p3, fill)
+        line.color = INK; line.strokeWidth = 3f; c.drawPath(p3, line)
+        fill.color = 0x88FFFFFF.toInt(); c.drawRoundRect(2f, -5f, 13f, -3f, 1f, 1f, fill)
+    }
+
+    private fun headphones(c: Canvas) {
+        val r = HEAD_R
+        line.color = INK; line.strokeWidth = 7f; c.drawArc(-r - 3f, -r - 6f, r + 3f, r + 2f, 195f, 150f, false, line)
+        line.color = 0xFF4B5563.toInt(); line.strokeWidth = 3.5f; c.drawArc(-r - 3f, -r - 6f, r + 3f, r + 2f, 195f, 150f, false, line)
+        line.color = INK
+        for (side in intArrayOf(-1, 1)) {
+            val x = side * (r + 1f)
+            shape.reset(); shape.addRoundRect(x - 4.5f, -5f, x + 4.5f, 8f, 4f, 4f, Path.Direction.CW)
+            toon(c, shape, 0xFFFF5C7A.toInt(), depth = 1.5f, stroke = 3f, gloss = false, shadow = false)
+        }
+    }
+
+    /** Seated person on a chair at [x], facing right. */
+    private fun sitter(c: Canvas, s: Float, lk: AvatarLook, x: Float, arms: Arms, eyes: Eyes, tilt: Float = 0f, bob: Float = 0f) {
+        val outfit = AvatarLook.OUTFITS[lk.outfit]; val skin = AvatarLook.SKINS[lk.skin]
+        limb(c, x - 14f, 24f, x - 14f, 44f, 3f, shade(WOOD, 0.8f)); limb(c, x + 12f, 24f, x + 12f, 44f, 3f, shade(WOOD, 0.8f))
+        shape.reset(); shape.addRoundRect(x - 21f, -14f, x - 13f, 26f, 4f, 4f, Path.Direction.CW)
+        toon(c, shape, WOOD, depth = 2f, stroke = 3f, gloss = false, shadow = false)
+        shape.reset(); shape.addRoundRect(x - 21f, 19f, x + 16f, 26f, 3f, 3f, Path.Direction.CW)
+        toon(c, shape, WOOD, depth = 3f, stroke = 3f, gloss = false, shadow = false)
+        val hy = 16f; val sy = -8f + bob
+        limb3(c, x - 2f, hy, x + 18f, hy + 1f, x + 18f, 41f, 8f, shade(PANTS, 0.75f)); shoe(c, x + 19f, 42f)
+        val back = shade(outfit, 0.75f)
+        when (arms) {
+            Arms.PHONE -> limb3(c, x, sy + 4f, x + 9f, sy + 16f, x + 17f, sy + 5f, 5.5f, back)
+            Arms.KNEES -> limb3(c, x, sy + 4f, x + 8f, sy + 18f, x + 17f, hy, 5.5f, back)
+            Arms.MUG -> limb3(c, x, sy + 4f, x + 6f, sy + 18f, x + 14f, hy - 2f, 5.5f, back)
+        }
+        limb(c, x, hy - 3f, x + 2f, sy, 19f, outfit)
+        limb3(c, x + 1f, hy + 1f, x + 22f, hy + 2f, x + 22f, 42f, 8.5f, PANTS); shoe(c, x + 23f, 43f)
+        head(c, x + 4f, sy - 18f, lk, s, eyes, lookX = 2f, tilt = tilt)
+        when (arms) {
+            Arms.PHONE -> {
+                limb3(c, x + 3f, sy + 4f, x + 12f, sy + 16f, x + 19f, sy + 4f, 6f, outfit)
+                phoneProp(c, x + 21f, sy + 1f, -15f, s, on = true)
+                dot(c, x + 19f, sy + 4f, 3.2f, skin)
+            }
+            Arms.KNEES -> { limb3(c, x + 3f, sy + 4f, x + 11f, sy + 18f, x + 20f, hy + 1f, 6f, outfit); dot(c, x + 20f, hy + 1f, 3.2f, skin) }
+            Arms.MUG -> {
+                limb3(c, x + 3f, sy + 4f, x + 12f, sy + 16f, x + 17f, sy + 6f, 6f, outfit)
+                mug(c, x + 21f, sy + 4f, s)
+                dot(c, x + 17f, sy + 6f, 3.2f, skin)
+            }
+        }
+    }
+
+    /** Standing person with feet on y = 44; angles in degrees. */
+    private fun stander(
+        c: Canvas, s: Float, lk: AvatarLook, x: Float, legA: Float, armA: Float, eyes: Eyes,
+        tilt: Float = 0f, lift: Float = 0f, phones: Boolean = false, wave: Boolean = false,
+    ) {
+        val outfit = AvatarLook.OUTFITS[lk.outfit]; val skin = AvatarLook.SKINS[lk.skin]
+        val hx = x; val hy = 14f - lift; val sx = x + 1f; val sy = -8f - lift
+        fun foot(a: Float) = Math.toRadians(a.toDouble()).let { hx + (sin(it) * 29f).toFloat() to hy + (cos(it) * 29f).toFloat() }
+        fun hand(a: Float) = Math.toRadians(a.toDouble()).let { sx + (sin(it) * 21f).toFloat() to sy + 3f + (cos(it) * 21f).toFloat() }
+        val (bfx, bfy) = foot(-legA)
+        limb(c, hx, hy, bfx, bfy, 8f, shade(PANTS, 0.75f)); shoe(c, bfx + 1f, bfy + 1f)
+        val (bhx, bhy) = hand(-armA)
+        limb3(c, sx, sy + 3f, (sx + bhx) / 2 - 1f, (sy + bhy) / 2 + 2f, bhx, bhy, 5.5f, shade(outfit, 0.75f))
+        dot(c, bhx, bhy, 3f, shade(skin, 0.9f))
+        limb(c, hx, hy - 2f, sx, sy, 19f, outfit)
+        val (ffx, ffy) = foot(legA)
+        limb(c, hx + 1f, hy, ffx, ffy, 8.5f, PANTS); shoe(c, ffx + 1f, ffy + 1f)
+        head(c, x + 2f, sy - 18f, lk, s, eyes, lookX = 1.5f, tilt = tilt, phones = phones)
+        if (wave) {
+            // elbow out to the side, forearm waving above it
+            val a = Math.toRadians((165.0 + sin(s * 7f) * 25.0))
+            val exw = sx + 21f; val eyw = sy + 3f
+            val hxw = exw + (sin(a) * 15f).toFloat(); val hyw = eyw + (cos(a) * 15f).toFloat()
+            limb3(c, sx + 3f, sy + 3f, exw, eyw, hxw, hyw, 6f, outfit); dot(c, hxw, hyw, 3.4f, skin)
+        } else {
+            val (fhx, fhy) = hand(armA)
+            limb3(c, sx + 2f, sy + 3f, (sx + fhx) / 2 + 1f, (sy + fhy) / 2 + 2f, fhx, fhy, 6f, outfit)
+            dot(c, fhx, fhy, 3.2f, skin)
+        }
+    }
+
+    // ── Props ──
+
+    private fun phoneProp(c: Canvas, x: Float, y: Float, rot: Float, s: Float, on: Boolean) {
+        c.save(); c.translate(x, y); c.rotate(rot)
+        fill.color = INK; c.drawRoundRect(-4.5f, -8f, 4.5f, 8f, 2.5f, 2.5f, fill)
+        fill.color = if (on) (if ((s * 3f).toInt() % 3 == 0) 0xFFA5F3FC.toInt() else 0xFF7DD3FC.toInt()) else 0xFF374151.toInt()
+        c.drawRoundRect(-3f, -6.3f, 3f, 6.3f, 1.2f, 1.2f, fill)
+        c.restore()
+    }
+
+    private fun mug(c: Canvas, x: Float, y: Float, s: Float) {
+        line.color = INK; line.strokeWidth = 2.5f
+        c.drawArc(x + 2f, y - 3f, x + 9f, y + 4f, -90f, 180f, false, line)
+        shape.reset(); shape.addRoundRect(x - 5f, y - 6f, x + 5f, y + 6f, 2.5f, 2.5f, Path.Direction.CW)
+        toon(c, shape, 0xFFFFF7ED.toInt(), depth = 1.5f, stroke = 2.5f, gloss = false, shadow = false)
+        for (i in 0..1) {
+            val ph = (s * 0.6f + i * 0.5f) % 1f
+            line.color = Color.WHITE; line.alpha = ((1f - ph) * 200).toInt(); line.strokeWidth = 2f
+            val sx = x - 2f + i * 4f; val sy = y - 9f - ph * 14f
+            c.drawLine(sx + sin(ph * 9f) * 2f, sy, sx + sin(ph * 9f + 1.5f) * 2f, sy - 5f, line)
+        }
+        line.color = INK
+    }
+
+    private fun plant(c: Canvas, x: Float, s: Float) {
+        for (i in 0..2) {
+            c.save(); c.rotate(-30f + i * 30f + sin(s * 1.5f + i) * 4f, x, 32f)
+            shape.reset(); shape.addOval(x - 5f, 6f, x + 5f, 32f, Path.Direction.CW)
+            toon(c, shape, 0xFF4ADE80.toInt(), depth = 1.5f, stroke = 2.5f, gloss = false, shadow = false)
+            c.restore()
+        }
+        shape.reset(); shape.moveTo(x - 10f, 28f); shape.lineTo(x + 10f, 28f); shape.lineTo(x + 7f, 44f); shape.lineTo(x - 7f, 44f); shape.close()
+        toon(c, shape, 0xFFE07A4A.toInt(), depth = 2f, stroke = 3f, gloss = false, shadow = false)
+    }
+
+    private fun table(c: Canvas, x1: Float, x2: Float, top: Float) {
+        limb(c, x1 + 6f, top + 4f, x1 + 6f, 44f, 3f, shade(WOOD, 0.8f)); limb(c, x2 - 6f, top + 4f, x2 - 6f, 44f, 3f, shade(WOOD, 0.8f))
+        shape.reset(); shape.addRoundRect(x1, top, x2, top + 6f, 3f, 3f, Path.Direction.CW)
+        toon(c, shape, WOOD, depth = 3f, stroke = 3f, gloss = false, shadow = false)
+    }
+
+    private fun window(c: Canvas, x: Float, y: Float, s: Float, night: Boolean) {
+        box.set(x - 20f, y - 16f, x + 20f, y + 16f)
+        fill.color = if (night) 0xFF1B1745.toInt() else 0xFF9ED8FF.toInt(); c.drawRoundRect(box, 4f, 4f, fill)
+        c.save(); c.clipRect(box)
+        if (night) {
+            shape.reset(); shape.addCircle(x + 8f, y - 6f, 6f, Path.Direction.CW)
+            aux.reset(); aux.addCircle(x + 11f, y - 8f, 5f, Path.Direction.CW); shape.op(aux, Path.Op.DIFFERENCE)
+            fill.color = 0xFFFFE08A.toInt(); c.drawPath(shape, fill)
+            sparkle(c, x - 10f, y - 6f, 2.5f + sin(s * 3f), 0xFFFFF3B0.toInt()); sparkle(c, x - 2f, y + 7f, 2f + sin(s * 2.3f + 1f), 0xFFFFF3B0.toInt())
+        } else {
+            fill.color = 0xFFFFD43B.toInt(); c.drawCircle(x + 9f, y - 7f, 6f, fill)
+            val cx = x - 26f + wrap(s * 5f, 56f)
+            fill.color = Color.WHITE; c.drawCircle(cx, y + 4f, 5f, fill); c.drawCircle(cx + 6f, y + 2f, 6f, fill); c.drawCircle(cx + 12f, y + 4f, 4.5f, fill)
+        }
+        c.restore()
+        line.color = Color.WHITE; line.strokeWidth = 2.5f
+        c.drawLine(x, y - 16f, x, y + 16f, line); c.drawLine(x - 20f, y, x + 20f, y, line)
+        line.color = INK; line.strokeWidth = 3.5f; c.drawRoundRect(box, 4f, 4f, line)
+    }
+
+    private fun room(c: Canvas, s: Float, dark: Boolean) {
+        fill.color = if (dark) 0xFF2D2754.toInt() else 0xFFFFEBD2.toInt(); c.drawRect(-100f, -90f, 100f, 90f, fill)
+        fill.color = if (dark) 0x12FFFFFF else 0x12A0522D
+        for (i in -4..4) c.drawRect(i * 24f - 5f, -90f, i * 24f + 5f, 44f, fill)
+        fill.color = if (dark) 0xFF3A2E5E.toInt() else 0xFFE9B97F.toInt(); c.drawRect(-100f, 44f, 100f, 90f, fill)
+        line.color = 0x30000000; line.strokeWidth = 1.5f
+        for (i in -3..3) c.drawLine(i * 32f, 50f, i * 32f - 8f, 90f, line)
+        line.color = INK; line.strokeWidth = 3f; c.drawLine(-100f, 44f, 100f, 44f, line)
+        window(c, 58f, -38f, s, dark)
+    }
+
+    private fun outdoors(c: Canvas, s: Float, dark: Boolean, scroll: Float, road: Boolean) {
+        fill.shader = LinearGradient(0f, -75f, 0f, 44f,
+            if (dark) 0xFF1E1A4A.toInt() else 0xFF8FD3FF.toInt(), if (dark) 0xFF43307E.toInt() else 0xFFE6F6FF.toInt(), Shader.TileMode.CLAMP)
+        c.drawRect(-100f, -90f, 100f, 90f, fill); fill.shader = null
+        if (dark) {
+            for (i in 0..5) sparkle(c, -70f + i * 27f, -50f + (i * 37 % 30), 2f + 1.5f * sin(s * 2f + i), 0xFFFFF3B0.toInt())
+            shape.reset(); shape.addCircle(62f, -46f, 10f, Path.Direction.CW)
+            aux.reset(); aux.addCircle(67f, -50f, 8.5f, Path.Direction.CW); shape.op(aux, Path.Op.DIFFERENCE)
+            fill.color = 0xFFFFE08A.toInt(); c.drawPath(shape, fill)
+        } else {
+            fill.color = 0x55FFE27A; c.drawCircle(62f, -46f, 16f + sin(s * 2f) * 1.5f, fill)
+            fill.color = 0xFFFFD43B.toInt(); c.drawCircle(62f, -46f, 10f, fill)
+            for (i in 0..1) {
+                val cx = 110f - wrap(s * (4f + i * 3f) + i * 120f, 240f)
+                val cy = -54f + i * 18f
+                fill.color = Color.WHITE; c.drawCircle(cx, cy, 6f, fill); c.drawCircle(cx + 8f, cy - 3f, 8f, fill); c.drawCircle(cx + 16f, cy, 6f, fill)
+            }
+        }
+        // far hills, slowly sliding by
+        fill.color = if (dark) 0xFF2E2560.toInt() else 0xFFB8E4C9.toInt()
+        for (i in 0..3) c.drawCircle(130f - wrap(scroll * 0.25f + i * 80f, 320f), 52f, 40f, fill)
+        val gy = if (road) 48f else 44f
+        if (road) {
+            fill.color = if (dark) 0xFF4B4470.toInt() else 0xFFD6D3D1.toInt(); c.drawRect(-100f, 40f, 100f, 48f, fill)
+            fill.color = if (dark) 0xFF2C3142.toInt() else 0xFF5B6475.toInt(); c.drawRect(-100f, gy, 100f, 90f, fill)
+            fill.color = 0xDDFFFFFF.toInt()
+            for (i in 0..6) { val x = 110f - wrap(scroll + i * 36f, 252f); c.drawRect(x, 54f, x + 16f, 57f, fill) }
+        } else {
+            fill.color = if (dark) 0xFF2F6B4F.toInt() else 0xFF7BD389.toInt(); c.drawRect(-100f, gy, 100f, 90f, fill)
+        }
+        line.color = INK; line.strokeWidth = 3f; c.drawLine(-100f, gy, 100f, gy, line)
+    }
+
+    private fun tree(c: Canvas, x: Float, gy: Float, k: Float) {
+        limb(c, x, gy, x, gy - 22f * k, 4f * k, 0xFF9C6B3C.toInt())
+        shape.reset(); shape.addCircle(x, gy - 30f * k, 13f * k, Path.Direction.CW)
+        toon(c, shape, 0xFF34C47C.toInt(), depth = 2.5f, stroke = 3f, shadow = false)
+    }
+
+    private fun wheel(c: Canvas, x: Float, y: Float, r: Float, spin: Float, thin: Boolean = false) {
+        if (thin) {
+            line.color = INK; line.strokeWidth = 5f; c.drawCircle(x, y, r, line)
+            line.color = 0xFF9CA3AF.toInt(); line.strokeWidth = 2f; c.drawCircle(x, y, r, line)
+        } else {
+            fill.color = INK; c.drawCircle(x, y, r, fill)
+            fill.color = 0xFF9CA3AF.toInt(); c.drawCircle(x, y, r * 0.58f, fill)
+        }
+        line.color = INK; line.strokeWidth = if (thin) 1.2f else 2f
+        val rr = if (thin) r * 0.92f else r * 0.55f
+        for (k in 0..2) {
+            val a = spin + k * PI.toFloat() / 3f
+            c.drawLine(x - cos(a) * rr, y - sin(a) * rr, x + cos(a) * rr, y + sin(a) * rr, line)
+        }
+        fill.color = 0xFFE5E7EB.toInt(); c.drawCircle(x, y, r * 0.18f, fill)
+    }
+
+    private fun smoke(c: Canvas, x: Float, y: Float, s: Float) {
+        for (i in 0..4) {
+            val ph = (s * 1.3f + i / 5f) % 1f
+            val px = x - ph * 42f; val py = y - ph * 14f + sin(s * 3f + i) * 2f; val r = 3f + ph * 8f
+            fill.color = 0xFFE5E7EB.toInt(); fill.alpha = ((1f - ph) * 190).toInt(); c.drawCircle(px, py, r, fill)
+            line.color = INK; line.alpha = ((1f - ph) * 110).toInt(); line.strokeWidth = 2f; c.drawCircle(px, py, r, line)
+        }
+        fill.alpha = 255; line.color = INK
+    }
+
+    private fun speedLines(c: Canvas, s: Float) {
+        line.strokeWidth = 2.5f
+        for (i in 0..2) {
+            val ph = (s * 2.2f + i * 0.37f) % 1f
+            val x = 20f - ph * 120f; val y = -40f + i * 18f
+            line.color = Color.WHITE; line.alpha = (sin(ph * PI.toFloat()) * 200).toInt()
+            c.drawLine(x, y, x + 22f, y, line)
+        }
+        line.color = INK
+    }
+
+    private fun batteryChip(c: Canvas, x: Float, y: Float, pct: Int, charging: Boolean, s: Float) {
+        val col = when { pct <= 15 -> 0xFFFF4D6D.toInt(); pct <= 35 -> 0xFFFF9F43.toInt(); else -> 0xFF4ADE80.toInt() }
+        shape.reset(); shape.addRoundRect(x, y - 7.5f, x + 32f, y + 7.5f, 4f, 4f, Path.Direction.CW)
+        fill.color = 0xFF2A2238.toInt(); c.drawPath(shape, fill)
+        val blink = pct <= 15 && !charging && (s * 2f).toInt() % 2 == 0
+        fill.color = col; fill.alpha = if (blink) 110 else 255
+        c.drawRoundRect(x + 2.5f, y - 5f, x + 2.5f + 27f * (pct.coerceIn(4, 100) / 100f), y + 5f, 2.5f, 2.5f, fill); fill.alpha = 255
+        line.color = INK; line.strokeWidth = 3f; c.drawPath(shape, line)
+        fill.color = INK; c.drawRoundRect(x + 32f, y - 3f, x + 36f, y + 3f, 1.5f, 1.5f, fill)
+        chunky(c, if (charging) "⚡$pct%" else "$pct%", x + 16f, y + 3.5f, 9f, maxW = 28f)
+    }
+
+    private fun note(c: Canvas, x: Float, y: Float, k: Float, col: Int, alpha: Int) {
+        fill.color = col; fill.alpha = alpha; c.drawOval(x - 4f * k, y - 3f * k, x + 4f * k, y + 3f * k, fill)
+        line.color = col; line.alpha = alpha; line.strokeWidth = 2f * k
+        c.drawLine(x + 3.4f * k, y, x + 3.4f * k, y - 13f * k, line); c.drawLine(x + 3.4f * k, y - 13f * k, x + 8f * k, y - 9f * k, line)
+        fill.alpha = 255; line.color = INK
+    }
+
+    // ── Scenes ──
+
+    private fun scenePhone(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        plant(c, 72f, s)
+        val x = -30f
+        sitter(c, s, lk, x, Arms.PHONE, Eyes.OPEN, tilt = 6f + sin(s * 1.3f) * 2f, bob = sin(s * 2f) * 0.6f)
+        fill.color = 0x2238E0FF; c.drawOval(x + 2f, -36f, x + 30f, -4f, fill)  // screen glow on the face
+        for (i in 0..2) { // little chat bubbles popping out of the phone
+            val ph = (s * 0.42f + i / 3f) % 1f
+            val bx = x + 26f + ph * 34f; val by = -16f - ph * 40f
+            val a = (sin(ph * PI.toFloat()) * 255).toInt()
+            fill.color = Color.WHITE; fill.alpha = a; c.drawRoundRect(bx - 8f, by - 5.5f, bx + 8f, by + 5.5f, 5f, 5f, fill)
+            line.color = INK; line.alpha = a; line.strokeWidth = 2f; c.drawRoundRect(bx - 8f, by - 5.5f, bx + 8f, by + 5.5f, 5f, 5f, line)
+            if (i == 1) { heartPath(aux, 3.4f, bx, by); fill.color = 0xFFFF4D6D.toInt(); fill.alpha = a; c.drawPath(aux, fill) }
+            else { fill.color = INK; fill.alpha = a; for (d in -1..1) c.drawCircle(bx + d * 4f, by, 1.3f, fill) }
+            fill.alpha = 255; line.color = INK
+        }
+    }
+
+    private fun sceneAway(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        table(c, 22f, 64f, 14f)
+        fill.color = INK; c.drawRoundRect(32f, 8f, 52f, 13f, 2f, 2f, fill)   // phone lying face down
+        plant(c, 80f, s)
+        sitter(c, s, lk, -36f, Arms.MUG, Eyes.OPEN, tilt = sin(s * 0.8f) * 3f, bob = sin(s * 1.2f) * 0.5f)
+    }
+
+    private fun sceneCharge(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        table(c, 12f, 72f, 12f)
+        // socket on the wall and the cable to the phone
+        shape.reset(); shape.addRoundRect(78f, 14f, 92f, 30f, 3f, 3f, Path.Direction.CW)
+        toon(c, shape, 0xFFF3F4F6.toInt(), depth = 1.5f, stroke = 2.5f, gloss = false, shadow = false)
+        aux.reset(); aux.moveTo(42f, 10f); aux.quadTo(60f, 14f, 74f, 11f); aux.quadTo(84f, 10f, 85f, 22f)
+        line.color = INK; line.strokeWidth = 4f; line.style = Paint.Style.STROKE; c.drawPath(aux, line)
+        line.color = Color.WHITE; line.strokeWidth = 2f; c.drawPath(aux, line); line.color = INK
+        // phone on a stand, battery filling up
+        fill.color = INK; c.drawRoundRect(33f, -22f, 51f, 10f, 4f, 4f, fill)
+        fill.color = 0xFF1F2937.toInt(); c.drawRoundRect(35.5f, -19f, 48.5f, 7f, 2f, 2f, fill)
+        line.color = Color.WHITE; line.strokeWidth = 1.6f; c.drawRoundRect(37.5f, -11f, 46.5f, -1f, 1.5f, 1.5f, line)
+        fill.color = 0xFF4ADE80.toInt(); val lv = (s * 0.3f) % 1f
+        c.drawRect(38.5f, -2f - 8f * lv, 45.5f, -2f, fill)
+        fill.color = Color.WHITE; c.drawRect(40.5f, -12.5f, 43.5f, -11f, fill)
+        aux.reset(); aux.moveTo(43f, -15.5f); aux.lineTo(39.5f, -10f); aux.lineTo(42f, -10f); aux.lineTo(41f, -5f); aux.lineTo(44.5f, -11f); aux.lineTo(42f, -11f); aux.close()
+        fill.color = 0xFFFFD43B.toInt(); fill.alpha = (180 + 75 * sin(s * 4f)).toInt(); c.drawPath(aux, fill); fill.alpha = 255
+        line.color = INK
+        val x = -52f
+        sitter(c, s, lk, x, Arms.KNEES, Eyes.SAD, tilt = 7f + sin(s * 0.9f) * 1.5f)
+        // sigh: three dots appearing one by one
+        val n = ((s * 1.2f) % 4f).toInt()
+        for (i in 0 until min(n, 3)) { fill.color = Color.WHITE; c.drawCircle(x + 22f + i * 6f, -50f - i * 3f, 2.2f, fill); line.strokeWidth = 1.5f; c.drawCircle(x + 22f + i * 6f, -50f - i * 3f, 2.2f, line) }
+        // sweat drop now and then
+        val dp = (s * 0.5f) % 1f
+        if (dp < 0.6f) {
+            val dy = -34f + dp * 14f
+            aux.reset(); aux.moveTo(x + 20f, dy - 5f); aux.quadTo(x + 24f, dy + 1f, x + 20f, dy + 2f); aux.quadTo(x + 16f, dy + 1f, x + 20f, dy - 5f); aux.close()
+            fill.color = 0xFF93C5FD.toInt(); c.drawPath(aux, fill); line.strokeWidth = 1.5f; c.drawPath(aux, line)
+        }
+    }
+
+    private fun sceneSleep(c: Canvas, s: Float, lk: AvatarLook) {
+        room(c, s, dark = true)
+        shape.reset(); shape.addRoundRect(-88f, -14f, -76f, 44f, 4f, 4f, Path.Direction.CW)
+        toon(c, shape, WOOD, depth = 2f, stroke = 3f, gloss = false, shadow = false)
+        limb(c, 72f, 34f, 72f, 44f, 3f, shade(WOOD, 0.8f))
+        shape.reset(); shape.addRoundRect(-80f, 20f, 80f, 36f, 6f, 6f, Path.Direction.CW)
+        toon(c, shape, 0xFFF3F4F6.toInt(), depth = 3f, stroke = 3.5f, gloss = false, shadow = false)
+        shape.reset(); shape.addOval(-76f, 4f, -40f, 21f, Path.Direction.CW)
+        toon(c, shape, Color.WHITE, depth = 2f, stroke = 3f, gloss = false, shadow = false)
+        head(c, -56f, 4f, lk, s, Eyes.CLOSED, lookX = 0f, tilt = -18f)
+        val k = 1f + 0.05f * sin(s * 1.7f)
+        c.save(); c.scale(1f, k, 0f, 32f)
+        p3.reset(); p3.moveTo(-46f, 33f); p3.lineTo(-46f, 14f); p3.quadTo(-42f, 3f, -26f, 5f)
+        p3.quadTo(10f, -8f, 42f, 8f); p3.quadTo(72f, 10f, 80f, 22f); p3.lineTo(80f, 33f); p3.close()
+        val blanket = shade(AvatarLook.OUTFITS[lk.outfit], 1.1f)
+        toon(c, p3, blanket, depth = 3f, stroke = 3.5f, gloss = false, shadow = false)
+        c.save(); c.clipPath(p3)
+        line.color = 0x40FFFFFF; line.strokeWidth = 5f
+        for (i in -2..4) c.drawLine(i * 24f, -10f, i * 24f + 18f, 40f, line)
+        c.restore(); c.restore(); line.color = INK
+        for (i in 0..2) {
+            val ph = (s * 0.4f + i / 3f) % 1f
+            chunky(c, "z", -42f + ph * 26f, -16f - ph * 34f, 10f + i * 4f, 0xFFB9A6FF.toInt(), alpha = ((1f - ph) * 255).toInt())
+        }
+    }
+
+    private fun sceneWalk(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        val scroll = s * 26f
+        outdoors(c, s, dark, scroll, road = false)
+        for (i in 0..2) tree(c, 120f - wrap(scroll * 0.7f + i * 90f, 270f), 44f, 1f)
+        val ph = s * 6f
+        stander(c, s, lk, -4f, legA = sin(ph) * 26f, armA = -sin(ph) * 30f, eyes = Eyes.OPEN, tilt = sin(ph) * 2f, lift = abs(sin(ph)) * 2.2f)
+        for (i in 0..1) { // bushes in front
+            val bx = 120f - wrap(scroll * 1.3f + i * 130f, 260f)
+            shape.reset(); shape.addCircle(bx, 44f, 9f, Path.Direction.CW)
+            aux.reset(); aux.addCircle(bx + 10f, 42f, 11f, Path.Direction.CW); shape.op(aux, Path.Op.UNION)
+            aux.reset(); aux.addCircle(bx + 21f, 44f, 8f, Path.Direction.CW); shape.op(aux, Path.Op.UNION)
+            toon(c, shape, 0xFF22A565.toInt(), depth = 2f, stroke = 3f, shadow = false)
+        }
+    }
+
+    private fun sceneMusic(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        plant(c, -76f, s)
+        val beat = s * 2.2f * PI.toFloat()
+        val b = abs(sin(beat))
+        stander(c, s, lk, -6f, legA = sin(beat) * 6f, armA = 18f + sin(beat) * 26f, eyes = Eyes.HAPPY, tilt = sin(beat) * 10f, lift = b * 3f, phones = true)
+        val cols = intArrayOf(0xFFFF4D6D.toInt(), 0xFFFFD43B.toInt(), 0xFF38BDF8.toInt(), 0xFFA78BFA.toInt())
+        for (i in 0..3) {
+            val ph = (s * 0.5f + i / 4f) % 1f
+            note(c, 14f + ph * 30f + sin(ph * 8f + i) * 5f, -30f - ph * 34f + i * 2f, 1f + (i % 2) * 0.25f, cols[i], (sin(ph * PI.toFloat()) * 255).toInt())
+        }
+    }
+
+    /** Ghost mode: a sheet-ghost (with the owner's hair poking out) floating in a dim room. */
+    private fun sceneGhost(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        fill.color = if (dark) 0x55000000 else 0x33201040; c.drawRect(-100f, -90f, 100f, 90f, fill)
+        for (i in 0..4) {
+            val ph = (s * 0.35f + i * 0.2f) % 1f
+            sparkle(c, -70f + i * 35f, 30f - ph * 90f, 2.5f * (1f - ph) + 0.5f, 0xFFE9E3FF.toInt())
+        }
+        val by = sin(s * 2.5f) * 6f
+        // hair tuft on top of the sheet, in the owner's hair colour
+        aux.reset(); aux.moveTo(-6f, -36f + by); aux.quadTo(-4f, -50f + by, 4f, -48f + by); aux.quadTo(0f, -44f + by, 6f, -38f + by)
+        line.color = INK; line.strokeWidth = 8f; c.drawPath(aux, line)
+        line.color = AvatarLook.HAIR_COLORS[lk.hairColor]; line.strokeWidth = 4f; c.drawPath(aux, line); line.color = INK
+        c.save(); c.translate(0f, 2f); c.scale(0.95f, 0.95f); ghost(c, s); c.restore()
+        // "shh" bubble
+        c.save(); c.translate(-52f, -26f + by * 0.5f)
+        shape.reset(); shape.addRoundRect(-17f, -10f, 17f, 10f, 9f, 9f, Path.Direction.CW)
+        toon(c, shape, Color.WHITE, depth = 2f, stroke = 2.5f, gloss = false, shadow = false)
+        txt.style = Paint.Style.FILL; txt.color = INK; txt.textSize = 10f; txt.textAlign = Paint.Align.CENTER
+        c.drawText("shh", 0f, 3.5f, txt)
+        c.restore()
+    }
+
+    private const val NUDGE = "nudge"   // shown on my screen for a minute after they nudge me
+
+    /** They just nudged me: jumping, waving, with a big "hey!" bubble. */
+    private fun sceneNudge(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        val jump = -abs(sin(s * 5f)) * 8f
+        c.save(); c.translate(0f, jump)
+        stander(c, s * 2f, lk, -14f, legA = 6f, armA = 14f, eyes = Eyes.HAPPY, tilt = sin(s * 6f) * 6f, wave = true)
+        c.restore()
+        c.save(); c.translate(46f, -34f); c.rotate(sin(s * 7f) * 6f)
+        shape.reset(); shape.addRoundRect(-22f, -13f, 22f, 13f, 12f, 12f, Path.Direction.CW)
+        shape.moveTo(-10f, 11f); shape.lineTo(-18f, 22f); shape.lineTo(-2f, 12f); shape.close()
+        toon(c, shape, 0xFFFFE066.toInt(), depth = 2.5f, stroke = 3f, gloss = false, shadow = false)
+        chunky(c, "hey!", 0f, 5f, 15f)
+        c.restore()
+        for (i in 0..2) {
+            val ph = (s * 1.2f + i / 3f) % 1f
+            line.color = 0xFFFF6B9A.toInt(); line.strokeWidth = 2.5f; line.alpha = ((1f - ph) * 255).toInt()
+            val r = 9f + ph * 9f; val hx = 20f; val hy = -24f + jump
+            c.drawArc(hx - r, hy - r, hx + r, hy + r, 250f, 60f, false, line); c.drawArc(hx - r, hy - r, hx + r, hy + r, 150f, 50f, false, line)
+            line.alpha = 255; line.color = INK
+        }
+    }
+
+    private fun sceneHello(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        room(c, s, dark)
+        plant(c, -74f, s)
+        stander(c, s, lk, 0f, legA = 4f, armA = 10f, eyes = Eyes.HAPPY, tilt = sin(s * 2f) * 4f, wave = true)
+    }
+
+    private fun bikeRider(c: Canvas, s: Float, lk: AvatarLook, hx: Float, hy: Float, sx: Float, sy: Float, kx: Float, ky: Float, fx: Float, fy: Float, ex: Float, ey: Float, gx: Float, gy: Float, helmet: Boolean) {
+        val outfit = AvatarLook.OUTFITS[lk.outfit]; val skin = AvatarLook.SKINS[lk.skin]
+        limb3(c, sx - 2f, sy + 3f, ex - 2f, ey - 1f, gx - 2f, gy - 1.5f, 5.5f, shade(outfit, 0.75f))
+        limb(c, hx, hy, sx, sy, 19f, outfit)
+        head(c, sx + 5f, sy - 17f, lk, s, Eyes.OPEN, lookX = 2.5f, tilt = 8f, helmet = helmet)
+        limb3(c, hx + 1f, hy, kx, ky, fx, fy, 8.5f, PANTS); shoe(c, fx + 1f, fy + 1f)
+        limb3(c, sx + 1f, sy + 3f, ex, ey, gx, gy, 6f, outfit); dot(c, gx, gy, 3.2f, skin)
+    }
+
+    private fun sceneRide(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        val scroll = s * 150f
+        outdoors(c, s, dark, scroll * 0.4f, road = true)
+        for (i in 0..2) tree(c, 120f - wrap(scroll * 0.5f + i * 95f, 285f), 40f, 0.8f)
+        speedLines(c, s)
+        val bikeCol = if (lk.outfit in 0..1) 0xFF38BDF8.toInt() else 0xFFFF4D6D.toInt()
+        c.save(); c.translate(-4f, sin(s * 46f) * 0.9f); c.rotate(sin(s * 29f) * 0.6f, 0f, 36f)
+        // headlight beam
+        aux.reset(); aux.moveTo(32f, 2f); aux.lineTo(110f, -16f); aux.lineTo(110f, 26f); aux.close()
+        fill.color = if (dark) 0x55FFF3B0 else 0x26FFF3B0; c.drawPath(aux, fill)
+        val spin = -s * 14f
+        if (lk.ride == 1) {
+            // scooter
+            smoke(c, -50f, 33f, s)
+            limb(c, -30f, 34f, -48f, 34f, 3f, 0xFFB8BCC6.toInt())
+            wheel(c, -32f, 38f, 10f, spin); wheel(c, 32f, 38f, 10f, spin)
+            limb(c, 24f, 10f, 32f, 38f, 3f, 0xFFCBD5E1.toInt())
+            shape.reset(); shape.addRoundRect(-46f, 8f, -4f, 32f, 12f, 12f, Path.Direction.CW)
+            toon(c, shape, bikeCol, depth = 3f, stroke = 3.5f, shadow = false)
+            shape.reset(); shape.addRoundRect(-8f, 27f, 22f, 33f, 3f, 3f, Path.Direction.CW)
+            toon(c, shape, shade(bikeCol, 0.7f), depth = 2f, stroke = 3f, gloss = false, shadow = false)
+            shape.reset(); shape.moveTo(14f, 33f); shape.quadTo(28f, 18f, 23f, -8f); shape.lineTo(30f, -9f); shape.quadTo(37f, 16f, 23f, 34f); shape.close()
+            toon(c, shape, bikeCol, depth = 2f, stroke = 3.5f, shadow = false)
+            fill.color = 0xFF2A2238.toInt(); c.drawRoundRect(-38f, 2f, -10f, 9f, 3f, 3f, fill); line.strokeWidth = 3f; c.drawRoundRect(-38f, 2f, -10f, 9f, 3f, 3f, line)
+            limb(c, 22f, -11f, 32f, -13f, 3f, 0xFF4B5563.toInt())
+            dot(c, 32f, -1f, 3.8f, 0xFFFFE27A.toInt())
+            bikeRider(c, s, lk, -22f, 2f, -13f, -20f, 2f, 6f, 6f, 26f, 4f, -9f, 26f, -12f, helmet = true)
+        } else {
+            // motorbike
+            smoke(c, -46f, 28f, s)
+            wheel(c, -34f, 35f, 13f, spin); wheel(c, 36f, 35f, 13f, spin)
+            limb(c, -4f, 30f, -42f, 28f, 4f, 0xFFB8BCC6.toInt())
+            shape.reset(); shape.addRoundRect(-10f, 16f, 12f, 32f, 4f, 4f, Path.Direction.CW)
+            toon(c, shape, 0xFF6B7280.toInt(), depth = 2f, stroke = 3f, gloss = false, shadow = false)
+            limb(c, 24f, 0f, 36f, 35f, 3.5f, 0xFFCBD5E1.toInt())
+            shape.reset(); shape.moveTo(-44f, 20f); shape.lineTo(-30f, 10f); shape.lineTo(-6f, 10f); shape.lineTo(2f, 2f)
+            shape.quadTo(14f, -4f, 25f, 2f); shape.lineTo(20f, 18f); shape.lineTo(-6f, 22f); shape.lineTo(-34f, 24f); shape.close()
+            toon(c, shape, bikeCol, depth = 3f, stroke = 3.5f, round = 4f, shadow = false)
+            fill.color = 0xFF2A2238.toInt(); c.drawRoundRect(-31f, 4f, -5f, 11f, 3f, 3f, fill); line.strokeWidth = 3f; c.drawRoundRect(-31f, 4f, -5f, 11f, 3f, 3f, line)
+            limb(c, 23f, 0f, 22f, -6f, 3f, 0xFF4B5563.toInt()); limb(c, 19f, -6f, 27f, -4f, 3f, 0xFF4B5563.toInt())
+            dot(c, 30f, 4f, 4.5f, 0xFFFFE27A.toInt())
+            bikeRider(c, s, lk, -17f, 6f, -5f, -16f, 6f, 10f, 2f, 26f, 8f, -6f, 21f, -5f, helmet = true)
+        }
+        c.restore()
+    }
+
+    private fun knee(hx: Float, hy: Float, fx: Float, fy: Float, l: Float): Pair<Float, Float> {
+        val dx = fx - hx; val dy = fy - hy
+        val d = min(hypot(dx, dy), 2 * l - 0.01f).coerceAtLeast(0.01f)
+        val h = sqrt(max(0f, l * l - d * d / 4f))
+        var px = -dy / d * h; var py = dx / d * h
+        if (px < 0f) { px = -px; py = -py }
+        return (hx + fx) / 2 + px to (hy + fy) / 2 + py
+    }
+
+    private fun sceneCycle(c: Canvas, s: Float, lk: AvatarLook, dark: Boolean) {
+        val scroll = s * 70f
+        outdoors(c, s, dark, scroll * 0.4f, road = true)
+        for (i in 0..2) tree(c, 120f - wrap(scroll * 0.6f + i * 95f, 285f), 40f, 0.8f)
+        val frame = AvatarLook.OUTFITS[(lk.outfit + 4) % AvatarLook.OUTFITS.size]
+        val outfit = AvatarLook.OUTFITS[lk.outfit]; val skin = AvatarLook.SKINS[lk.skin]
+        c.save(); c.translate(-2f, abs(sin(s * 7f)) * -0.8f)
+        val spin = -s * 9f
+        wheel(c, -30f, 34f, 14f, spin, thin = true); wheel(c, 30f, 34f, 14f, spin, thin = true)
+        val a = s * 7f
+        val p1x = cos(a) * 7f; val p1y = 34f + sin(a) * 7f
+        val p2x = -p1x; val p2y = 68f - p1y
+        val hx = -10f; val hy = 0f
+        // far leg
+        val (k2x, k2y) = knee(hx, hy, p2x, p2y, 22f)
+        limb3(c, hx, hy, k2x, k2y, p2x, p2y, 8f, shade(PANTS, 0.75f)); shoe(c, p2x, p2y)
+        for ((x1, y1, x2, y2) in listOf(floatArrayOf(-30f, 34f, 0f, 34f), floatArrayOf(-30f, 34f, -8f, 6f), floatArrayOf(0f, 34f, -8f, 6f),
+            floatArrayOf(-8f, 6f, 22f, 4f), floatArrayOf(0f, 34f, 22f, 4f), floatArrayOf(22f, 4f, 30f, 34f), floatArrayOf(22f, 4f, 24f, -6f))) {
+            limb(c, x1, y1, x2, y2, 3f, frame)
+        }
+        limb(c, 20f, -6f, 28f, -7f, 3f, 0xFF4B5563.toInt())
+        line.strokeWidth = 2.5f; c.drawLine(p1x, p1y, p2x, p2y, line)
+        fill.color = 0xFF2A2238.toInt(); c.drawRoundRect(-17f, 1f, -3f, 6f, 2.5f, 2.5f, fill); line.strokeWidth = 2.5f; c.drawRoundRect(-17f, 1f, -3f, 6f, 2.5f, 2.5f, line)
+        val sx = 2f; val sy = -20f
+        limb3(c, sx - 2f, sy + 3f, 10f, -12f, 22f, -8f, 5.5f, shade(outfit, 0.75f))
+        limb(c, hx, hy - 2f, sx, sy, 19f, outfit)
+        head(c, sx + 5f, sy - 17f, lk, s, Eyes.HAPPY, lookX = 2.5f, tilt = 6f)
+        val (k1x, k1y) = knee(hx, hy, p1x, p1y, 22f)
+        limb3(c, hx + 1f, hy, k1x, k1y, p1x, p1y, 8.5f, PANTS); shoe(c, p1x, p1y)
+        limb3(c, sx + 1f, sy + 3f, 12f, -12f, 24f, -7f, 6f, outfit); dot(c, 24f, -7f, 3.2f, skin)
+        c.restore()
+    }
+
     /** Sample data for sticker previews in the picker. */
     object Preview : LiveSource {
         override val myUid = "me"
         private val st = LiveStats(steps = 10_480, km = 7.6f, speed = 38f, speedAt = Long.MAX_VALUE / 2, name = "You")
-        override fun stats(uid: String) = st
+        private val cycle = arrayOf(Status.PHONE, Status.RIDE, Status.WALK, Status.MUSIC, Status.CHARGE, Status.SLEEP, Status.CYCLE, Status.AWAY)
+        override fun stats(uid: String): LiveStats {
+            val now = System.currentTimeMillis()
+            val k = cycle[((now / 2600L) % cycle.size).toInt()]
+            return st.copy(status = k, statusAt = now - 17 * 60_000L, updatedAt = now, battery = 64, charging = k == Status.CHARGE)
+        }
         override fun presence(roomId: String) = mapOf(
             "me" to Presence(12.9716, 77.5946, Long.MAX_VALUE / 2, "Me"),
             "p" to Presence(12.9916, 77.6146, Long.MAX_VALUE / 2, "Sam"),
